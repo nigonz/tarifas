@@ -620,11 +620,7 @@ Original file is located at
 #                 st.error(f"❌ El sistema encontró un error crítico: {e}")
 
 # 1. Matamos cualquier proceso trabado
-!fuser -k 8501/tcp
+
 
 # 2. Le pedimos a Google Colab que nos haga un túnel directo y seguro
-from google.colab import output
-output.serve_kernel_port_as_window(8501)
 
-# 3. Lanzamos Streamlit
-!streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false
