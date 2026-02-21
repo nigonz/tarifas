@@ -7,16 +7,11 @@ Original file is located at
     https://colab.research.google.com/drive/1PEfPOC4n-ceUgq6EcEL1bj_DHpGQxDoa
 """
 
+import streamlit as st  # <--- ESTA LÍNEA TIENE QUE ESTAR ARRIBA DE TODO
+import pandas as pd
+import numpy as np
 
-
-# Commented out IPython magic to ensure Python compatibility.
-# %%writefile app.py
-# import streamlit as st
-# import pandas as pd
-# import numpy as np
-# import io
-# --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
-# --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
+import xlsxwriter
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
 
