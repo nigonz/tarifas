@@ -13,9 +13,9 @@ if not st.session_state["acceso_concedido"]:
     try:
         clave_maestra = st.secrets["CLAVE_SECRETA"]
     except:
-        clave_maestra = "admin123" # Clave temporal si no configuraste los Secrets
-
-    clave_ingresada = st.text_input("Contraseña:", type="password")
+           clave_maestra = "admin123" # Clave temporal si no configuraste los Secrets
+   
+           clave_ingresada = st.text_input("Contraseña:", type="password")
     
  if clave_ingresada == clave_maestra:
             st.session_state["acceso_concedido"] = True
