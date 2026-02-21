@@ -7,29 +7,32 @@ Original file is located at
     https://colab.research.google.com/drive/1PEfPOC4n-ceUgq6EcEL1bj_DHpGQxDoa
 """
 
-import streamlit as st  # <--- ESTA LÍNEA TIENE QUE ESTAR ARRIBA DE TODO
 import pandas as pd
 import numpy as np
-
+import streamlit as st  # <--- ESTA TIENE QUE SER LA LÍNEA 3 O 4
 import xlsxwriter
+import io
+
+# --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
 
 if not st.session_state["acceso_concedido"]:
     st.title("🔒 Acceso Restringido")
-    st.write("Por favor, ingresá la contraseña para acceder al Orquestador TTR.")
-    
+    # Intentamos leer la clave de los secretos, si no existe usamos una por defecto para que no explote
+    try:
+        clave_maestra = st.secrets["CLAVE_SECRETA"]
+    except:
+        clave_maestra = "admin123" # Clave temporal si no configuraste los Secrets
+
     clave_ingresada = st.text_input("Contraseña:", type="password")
     
     if st.button("Entrar"):
-        # Verificamos contra la clave secreta que guardamos en la nube
-        if clave_ingresada == st.secrets["CLAVE_SECRETA"]:
+        if clave_ingresada == clave_maestra:
             st.session_state["acceso_concedido"] = True
-            st.rerun() # Recarga la página para dejarte pasar
+            st.rerun()
         else:
-            st.error("❌ Contraseña incorrecta. Intentá de nuevo.")
-    
-    # Esta línea frena la ejecución para que no muestre el resto de tu app
+            st.error("❌ Contraseña incorrecta")
     st.stop()
 
 # =========================================================
