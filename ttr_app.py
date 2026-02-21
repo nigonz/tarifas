@@ -15,6 +15,31 @@ Original file is located at
 # import pandas as pd
 # import numpy as np
 # import io
+# --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
+if "acceso_concedido" not in st.session_state:
+    st.session_state["acceso_concedido"] = False
+
+if not st.session_state["acceso_concedido"]:
+    st.title("🔒 Acceso Restringido")
+    st.write("Por favor, ingresá la contraseña para acceder al Orquestador TTR.")
+    
+    clave_ingresada = st.text_input("Contraseña:", type="password")
+    
+    if st.button("Entrar"):
+        # Verificamos contra la clave secreta que guardamos en la nube
+        if clave_ingresada == st.secrets["1224]:
+            st.session_state["acceso_concedido"] = True
+            st.rerun() # Recarga la página para dejarte pasar
+        else:
+            st.error("❌ Contraseña incorrecta. Intentá de nuevo.")
+    
+    # Esta línea frena la ejecución para que no muestre el resto de tu app
+    st.stop()
+
+# =========================================================
+# SI EL CÓDIGO LLEGA HASTA ACÁ, ES PORQUE PUSO LA CLAVE BIEN
+# TODO TU CÓDIGO ORIGINAL QUEDA ABAJO DE ESTA LÍNEA INTACTO
+# =========================================================
 # 
 # # =============================================================================================================================================0
 # # 1. HERRAMIENTA DF (DISTRITO FEDERAL)
