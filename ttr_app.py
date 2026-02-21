@@ -1,9 +1,7 @@
 
 import pandas as pd
 import numpy as np
-import streamlit as st  # <--- ESTA TIENE QUE SER LA LÍNEA 3 O 4
-import xlsxwriter
-import io
+import streamlit as st io
 
 # --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
 if "acceso_concedido" not in st.session_state:
