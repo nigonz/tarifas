@@ -1,28 +1,41 @@
-
 import pandas as pd
 import numpy as np
-import streamlit as st 
+import streamlit as st
+import xlsxwriter
+import io
 
-# --- SISTEMA DE SEGURIDAD (EL PATOVICA) --
+# --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
 
 if not st.session_state["acceso_concedido"]:
     st.title("🔒 Acceso Restringido")
-    # Intentamos leer la clave de los secretos, si no existe usamos una por defecto para que no explote
+    
+    # Intentamos leer la clave de los secretos
     try:
         clave_maestra = st.secrets["CLAVE_SECRETA"]
     except:
-           clave_maestra = "admin123" # Clave temporal si no configuraste los Secrets
-   
-           clave_ingresada = st.text_input("Contraseña:", type="password")
+        clave_maestra = "admin123" # Clave temporal si no hay Secrets
+
+    clave_ingresada = st.text_input("Contraseña:", type="password")
     
- if clave_ingresada == clave_maestra:
+    if st.button("Entrar"):
+        if clave_ingresada == clave_maestra:
             st.session_state["acceso_concedido"] = True
-            st.rerun()  # <--- ESTA LÍNEA ES VITAL
+            st.rerun()
         else:
             st.error("❌ Contraseña incorrecta")
+    
+    # IMPORTANTE: El stop debe estar aquí para frenar el resto de la app
     st.stop()
+
+# =========================================================
+# TODO TU CÓDIGO ORIGINAL DEBE EMPEZAR AQUÍ ABAJO
+# Asegurate de que NO tenga espacios al principio de cada línea
+# =========================================================
+
+st.title("Orquestador de Macheo TTR")
+# ... sigue el resto de tu código ...
 
 # =========================================================
 # SI EL CÓDIGO LLEGA HASTA ACÁ, ES PORQUE PUSO LA CLAVE BIEN
