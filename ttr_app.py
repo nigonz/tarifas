@@ -34,7 +34,7 @@ if not st.session_state["acceso_concedido"]:
 # Asegurate de que NO tenga espacios al principio de cada línea
 # =========================================================
 
-st.title("Orquestador de Macheo TTR")
+st.title("Procedimiento de Macheo TTR")
 # ... sigue el resto de tu código ...
 
 # =========================================================
