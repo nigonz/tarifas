@@ -27,7 +27,7 @@ if not st.session_state["acceso_concedido"]:
     
     if st.button("Entrar"):
         # Verificamos contra la clave secreta que guardamos en la nube
-        if clave_ingresada == st.secrets["1224]:
+        if clave_ingresada == st.secrets["1224"]:
             st.session_state["acceso_concedido"] = True
             st.rerun() # Recarga la página para dejarte pasar
         else:
