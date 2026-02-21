@@ -1,7 +1,7 @@
 
 import pandas as pd
 import numpy as np
-import streamlit as st io
+import streamlit as st 
 
 # --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
 if "acceso_concedido" not in st.session_state:
