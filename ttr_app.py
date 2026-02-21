@@ -17,18 +17,13 @@ if not st.session_state["acceso_concedido"]:
 
     clave_ingresada = st.text_input("Contraseña:", type="password")
     
-    if st.button("Entrar"):
-        if clave_ingresada == clave_maestra:
+ if clave_ingresada == clave_maestra:
             st.session_state["acceso_concedido"] = True
-            st.rerun()
+            st.rerun()  # <--- ESTA LÍNEA ES VITAL
         else:
             st.error("❌ Contraseña incorrecta")
     st.stop()
 
-# =========================================================
-# SI EL CÓDIGO LLEGA HASTA ACÁ, ES PORQUE PUSO LA CLAVE BIEN
-# TODO TU CÓDIGO ORIGINAL QUEDA ABAJO DE ESTA LÍNEA INTACTO
-# =========================================================
 # =========================================================
 # SI EL CÓDIGO LLEGA HASTA ACÁ, ES PORQUE PUSO LA CLAVE BIEN
 # TODO TU CÓDIGO ORIGINAL QUEDA ABAJO DE ESTA LÍNEA INTACTO
