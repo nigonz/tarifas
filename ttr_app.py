@@ -16,6 +16,7 @@ Original file is located at
 # import numpy as np
 # import io
 # --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
+# --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
 
@@ -27,7 +28,7 @@ if not st.session_state["acceso_concedido"]:
     
     if st.button("Entrar"):
         # Verificamos contra la clave secreta que guardamos en la nube
-        if clave_ingresada == st.secrets["1224"]:
+        if clave_ingresada == st.secrets["CLAVE_SECRETA"]:
             st.session_state["acceso_concedido"] = True
             st.rerun() # Recarga la página para dejarte pasar
         else:
@@ -36,6 +37,10 @@ if not st.session_state["acceso_concedido"]:
     # Esta línea frena la ejecución para que no muestre el resto de tu app
     st.stop()
 
+# =========================================================
+# SI EL CÓDIGO LLEGA HASTA ACÁ, ES PORQUE PUSO LA CLAVE BIEN
+# TODO TU CÓDIGO ORIGINAL QUEDA ABAJO DE ESTA LÍNEA INTACTO
+# =========================================================
 # =========================================================
 # SI EL CÓDIGO LLEGA HASTA ACÁ, ES PORQUE PUSO LA CLAVE BIEN
 # TODO TU CÓDIGO ORIGINAL QUEDA ABAJO DE ESTA LÍNEA INTACTO
