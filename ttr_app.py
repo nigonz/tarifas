@@ -645,8 +645,8 @@ if st.button("🚀 Procesar", type="primary"):
             except Exception as e:
                 st.error(f"❌ El sistema encontró un error crítico: {e}")
 
-1. Matamos cualquier proceso trabado
 
 
-2. Le pedimos a Google Colab que nos haga un túnel directo y seguro
+
+
 
