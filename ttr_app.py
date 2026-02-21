@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st 
 
-# --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
+# --- SISTEMA DE SEGURIDAD (EL PATOVICA) --
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
 
