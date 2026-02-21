@@ -7,9 +7,7 @@ Original file is located at
     https://colab.research.google.com/drive/1PEfPOC4n-ceUgq6EcEL1bj_DHpGQxDoa
 """
 
-!pip install xlsxwriter
 
-!pip install streamlit
 
 # Commented out IPython magic to ensure Python compatibility.
 # %%writefile app.py
