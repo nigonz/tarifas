@@ -4,6 +4,62 @@ import streamlit as st
 import xlsxwriter
 import io
 
+def procesar_liquidacion_dggi(df_dggi_raw, nom_gt, nom_ts, tarifas_ns):
+    # --- PARTE 1: Limpieza y Merge Inicial ---
+    df_ = df_dggi_raw[df_dggi_raw['ID_LINEA'].isin(nom_gt['ID_LINEA'])].copy()
+    
+    df_ramal_cols = ['ID_EMPRESA', 'ID_LINEA','RAMAL','TARIFA BASE ITG', 'DEBITADO', 'CONTRATO', 
+                     'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'MONTO']
+    df_ = df_[df_ramal_cols]
+
+    _df_ = df_.groupby(['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO','TARIFA BASE ITG', 'DEBITADO',
+                        'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION'], as_index=False).agg({
+        'CANTIDAD_USOS': 'sum',
+        'MONTO': 'sum'
+    })
+
+    columns_to_merge = ['ID_LINEA', 'GT', 'Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']
+    _df2_ = pd.merge(_df_, nom_gt[columns_to_merge], how='left', on='ID_LINEA')
+
+    # --- PARTE 2: Cálculos de Componentes (ATS e ITG) ---
+    _df2_['BE'] = np.where(_df2_['CONTRATO'].isin([830, 831, 832, 833]), 'SI', 'NO')
+    
+    for column in ['TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'CONTRATO']:
+        _df2_[column] = pd.to_numeric(_df2_[column], errors='coerce')
+
+    _df2_['COMP. ITG'] = _df2_['DESCUENTO X INTEGRACION'] * _df2_['CANTIDAD_USOS']
+    _df2_['COMP. ATS'] = _df2_.apply(
+        lambda x: ((x['DEBITADO'] / 0.45 * 0.55) * x['CANTIDAD_USOS'] if x['GT'] == 'INP' 
+        else (x['TARIFA BASE ITG'] - x['DEBITADO'] - x['DESCUENTO X INTEGRACION']) * x['CANTIDAD_USOS']) 
+        if x['CONTRATO'] == 621 else 0, axis=1
+    )
+    
+    _df2_['COMP. ATS s/IVA'] = _df2_['COMP. ATS'] / 1.105
+    _df2_['COMP. ITG s/IVA'] = _df2_['COMP. ITG'] / 1.105
+    _df2_.loc[_df2_['GT'] == 'DF', 'PROVINCIA'] = 'CABA'
+
+    # --- PARTE 3: Boleto Estudiantil (BE) ---
+    minimas_por_ramal = tarifas_ns.groupby('ID_RAMAL')[['PLENA']].min().reset_index()
+    minimas_por_ramal.columns = ['ID_RAMAL', 'MIN_PLENA']
+
+    BE_ = _df2_.merge(nom_ts[['IdRamalNS', 'TIPO DE SERVICIO FINAL']], left_on='RAMAL', right_on='IdRamalNS', how='left')
+    BE_ = BE_.merge(minimas_por_ramal, left_on='RAMAL', right_on='ID_RAMAL', how='left')
+    
+    tarifa_baja = BE_['TARIFA BASE ITG'] <= 0.5
+    BE_['Tarifa_BE'] = 0
+    BE_['Compensacion_BE_s_IVA'] = 0
+
+    condiciones = [BE_['CONTRATO'].isin([830, 833]), BE_['CONTRATO'].isin([831, 832]), BE_['CONTRATO'].isin([621, 0])]
+    resultados = [BE_['MIN_PLENA'] - 0.1, BE_['MIN_PLENA'] - 0.5, 0]
+    default = BE_['MIN_PLENA'] - BE_['TARIFA BASE ITG']
+
+    BE_.loc[tarifa_baja, 'Tarifa_BE'] = np.select(condiciones, resultados, default=default)
+    BE_.loc[tarifa_baja, 'Compensacion_BE_s_IVA'] = (BE_.loc[tarifa_baja, 'Tarifa_BE'] * BE_.loc[tarifa_baja, 'CANTIDAD_USOS']) / 1.105
+
+    # --- PARTE 4: Finalización y Renombrado ---
+    # (Agregamos aquí el renombrado que tenías en tu código)
+    return BE_ # O el DF final que necesites
+
 # --- SISTEMA DE SEGURIDAD (EL PATOVICA) ---
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
@@ -41,7 +97,31 @@ st.title("Procedimiento de Macheo TTR")
 # SI EL CÓDIGO LLEGA HASTA ACÁ, ES PORQUE PUSO LA CLAVE BIEN
 # TODO TU CÓDIGO ORIGINAL QUEDA ABAJO DE ESTA LÍNEA INTACTO
 # =========================================================
-# 
+# --- CREAMOS LAS PESTAÑAS ---
+tab1, tab2 = st.tabs(["🚀 PROCESO TTR FINAL", "📊 PRE-PROCESO DGGI"])
+
+with tab2:
+    st.subheader("Paso 1: Generar Liquidación DGGI")
+    st.info("Subí el CSV de la DGGI y los Nomencladores para preparar la base.")
+    
+    # Aquí pegamos los cargadores específicos para este proceso
+    f_dggi = st.file_uploader("1. Entrega DGGI (.csv)", type=['csv'])
+    f_nom_gt = st.file_uploader("2. Nomenclador GT (.xlsx)", type=['xlsx'])
+    f_nom_ts = st.file_uploader("3. Nomenclador TS (.xlsx)", type=['xlsx'])
+    f_tarifas = st.file_uploader("4. Tarifas NS (.xlsx)", type=['xlsx'])
+
+    if st.button("Generar Archivo para TTR"):
+        # Aquí adentro llamamos a la función que pegamos en el Piso 1
+        # Y ponemos un botón de descarga para este Excel intermedio
+        pass
+
+with tab1:
+    st.subheader("Paso 2: Determinación de TTR")
+    # ACÁ VA TODO TU CÓDIGO ORIGINAL (el que ya funciona con los 5 cargadores)
+    # El que procesa CABA, JN y PBA.
+
+
+
 # # =============================================================================================================================================0
 # # 1. HERRAMIENTA DF (DISTRITO FEDERAL)
 # # =============================================================================
