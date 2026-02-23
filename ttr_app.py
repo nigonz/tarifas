@@ -9,41 +9,67 @@ import io
 # =============================================================================
 
 def procesar_base_dggi(f_csv, nom_gt):
-    """Procesa el archivo pesado de DGGI por partes (chunks)"""
+    """
+    Función de pre-procesamiento: Espejo exacto de la lógica original.
+    Reduce los registros de millones a miles mediante agrupación.
+    """
     lista_pedazos = []
-    # Detecta si es ZIP o CSV
     compression = 'zip' if f_csv.name.endswith('.zip') else None
     
-    # Lee de a 50.000 filas para no saturar la memoria
+    # Columnas originales a conservar
+    df_ramal_cols = ['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'TARIFA BASE ITG', 'DEBITADO', 
+                     'CONTRATO', 'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION', 
+                     'CANTIDAD_USOS', 'MONTO']
+
+    # 1. Lectura por trozos (Chunks)
     for chunk in pd.read_csv(f_csv, encoding='ISO-8859-1', delimiter=';', 
-                             compression=compression, chunksize=50000):
+                             compression=compression, chunksize=100000):
         
-        # Filtra por las líneas que están en el nomenclador
+        # Filtro inicial por nomenclador
         chunk_filtrado = chunk[chunk['ID_LINEA'].isin(nom_gt['ID_LINEA'])].copy()
         
         if not chunk_filtrado.empty:
-            lista_pedazos.append(chunk_filtrado)
+            lista_pedazos.append(chunk_filtrado[df_ramal_cols])
             
     if not lista_pedazos:
         return pd.DataFrame()
         
-    df_final = pd.concat(lista_pedazos, ignore_index=True)
+    df_unificado = pd.concat(lista_pedazos, ignore_index=True)
     
-    # Cálculos de Componentes (ATS e ITG)
-    for col in ['TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'CONTRATO']:
-        df_final[col] = pd.to_numeric(df_final[col], errors='coerce')
+    # 2. AGRUPACIÓN (Crucial para llegar a los 81k registros)
+    df_agrupado = df_unificado.groupby(
+        ['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'TARIFA BASE ITG', 
+         'DEBITADO', 'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION'], 
+        as_index=False
+    ).agg({
+        'CANTIDAD_USOS': 'sum',
+        'MONTO': 'sum'
+    })
 
-    df_final['COMP. ITG'] = df_final['DESCUENTO X INTEGRACION'] * df_final['CANTIDAD_USOS']
-    df_final['COMP. ATS'] = df_final.apply(
-        lambda x: ((x['DEBITADO'] / 0.45 * 0.55) * x['CANTIDAD_USOS'] if x.get('GT') == 'INP' 
+    # 3. UNIÓN CON DATOS GEOGRÁFICOS
+    columns_to_merge = ['ID_LINEA', 'GT', 'Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']
+    nom_gt_limpio = nom_gt[columns_to_merge].drop_duplicates(subset=['ID_LINEA'])
+    
+    _df2_ = pd.merge(df_agrupado, nom_gt_limpio, how='left', on='ID_LINEA')
+
+    # 4. CÁLCULOS DE COMPENSACIONES
+    _df2_['BE'] = np.where(_df2_['CONTRATO'].isin([830, 831, 832, 833]), 'SI', 'NO')
+
+    for col in ['TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'CONTRATO']:
+        _df2_[col] = pd.to_numeric(_df2_[col], errors='coerce')
+
+    _df2_['COMP. ITG'] = _df2_['DESCUENTO X INTEGRACION'] * _df2_['CANTIDAD_USOS']
+    _df2_['COMP. ATS'] = _df2_.apply(
+        lambda x: ((x['DEBITADO'] / 0.45 * 0.55) * x['CANTIDAD_USOS'] if x['GT'] == 'INP' 
         else (x['TARIFA BASE ITG'] - x['DEBITADO'] - x['DESCUENTO X INTEGRACION']) * x['CANTIDAD_USOS']) 
         if x['CONTRATO'] == 621 else 0, axis=1
     )
     
-    df_final['COMP. ATS s/IVA'] = df_final['COMP. ATS'] / 1.105
-    df_final['COMP. ITG s/IVA'] = df_final['COMP. ITG'] / 1.105
+    _df2_['COMP. ATS s/IVA'] = _df2_['COMP. ATS'] / 1.105
+    _df2_['COMP. ITG s/IVA'] = _df2_['COMP. ITG'] / 1.105
+    _df2_.loc[_df2_['GT'] == 'DF', 'PROVINCIA'] = 'CABA'
     
-    return df_final
+    return _df2_
 
 def consolidar_excels(df_caba, df_jn, df_pba):
     """Une los tres resultados en uno solo"""
