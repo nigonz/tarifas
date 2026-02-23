@@ -166,20 +166,24 @@ with tab2:
                     
                     if not res.empty:
                         st.success("¡Base generada con éxito!")
-                        st.dataframe(res.head())
-                        
-                        output_dggi = io.BytesIO()
-                        with pd.ExcelWriter(output_dggi, engine='xlsxwriter') as writer:
-                            res.to_excel(writer, index=False, sheet_name='Base')
-                        output_dggi.seek(0)
-                        
-                        st.download_button("📥 Descargar Base para TTR", output_dggi, "base_dggi_procesada.xlsx")
+                        st.write(f"Filas totales: {len(res):,}") # Mostramos cuántas filas son
+                        st.dataframe(res.head()) 
+
+                        # Generamos el CSV para evitar el límite de filas de Excel
+                        csv_data = res.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+
+                        st.download_button(
+                            label="📥 DESCARGAR BASE DGGI (FORMATO CSV)",
+                            data=csv_data,
+                            file_name="base_dggi_completa.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
                     else:
-                        st.warning("No se encontraron coincidencias con el nomenclador.")
+                        st.warning("⚠️ No se encontraron datos que coincidan con el nomenclador.")
+                        
                 except Exception as e:
                     st.error(f"Error: {e}")
-
-# --- PESTAÑA 1: DETERMINACIÓN TTR ---
 with tab1:
     st.header("Cálculo de Tarifas Teóricas")
     st.info("Paso 2: Usá el archivo que descargaste recién como 'Archivo Base'.")
