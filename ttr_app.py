@@ -63,4 +63,114 @@ def consolidar_excels(df_caba, df_jn, df_pba):
 if "acceso_concedido" not in st.session_state:
     st.session_state["acceso_concedido"] = False
 
-if not st
+if not st.session_state["acceso_concedido"]:
+    st.title("🔒 Acceso Restringido")
+    try:
+        clave_maestra = st.secrets["CLAVE_SECRETA"]
+    except:
+        clave_maestra = "2470" 
+
+    clave_ingresada = st.text_input("Contraseña:", type="password")
+    if st.button("Entrar"):
+        if clave_ingresada == clave_maestra:
+            st.session_state["acceso_concedido"] = True
+            st.rerun()
+        else:
+            st.error("❌ Contraseña incorrecta")
+    st.stop()
+
+# =============================================================================
+# 3. INTERFAZ DE USUARIO
+# =============================================================================
+
+st.set_page_config(page_title="Orquestador TTR", layout="wide")
+st.title("Procedimiento de Macheo TTR")
+
+tab1, tab2 = st.tabs(["🚀 DETERMINACIÓN TTR", "📂 PRE-PROCESO DGGI"])
+
+# --- PESTAÑA 2: PRE-PROCESO ---
+with tab2:
+    st.header("Generador de Base DGGI")
+    st.info("Paso 1: Subí el CSV (o .zip) de la DGGI para generar el archivo base.")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        f_csv = st.file_uploader("1. Archivo DGGI", type=['csv', 'zip'])
+    with c2:
+        f_nom = st.file_uploader("2. Nomenclador GT", type=['xlsx'])
+
+    if f_csv and f_nom:
+        if st.button("🚀 Generar Base DGGI"):
+            with st.spinner("Procesando archivo pesado..."):
+                try:
+                    nom_gt = pd.read_excel(f_nom)
+                    res = procesar_base_dggi(f_csv, nom_gt)
+                    
+                    if not res.empty:
+                        st.success("¡Base generada con éxito!")
+                        st.dataframe(res.head())
+                        
+                        output_dggi = io.BytesIO()
+                        with pd.ExcelWriter(output_dggi, engine='xlsxwriter') as writer:
+                            res.to_excel(writer, index=False, sheet_name='Base')
+                        output_dggi.seek(0)
+                        
+                        st.download_button("📥 Descargar Base para TTR", output_dggi, "base_dggi_procesada.xlsx")
+                    else:
+                        st.warning("No se encontraron coincidencias con el nomenclador.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+# --- PESTAÑA 1: DETERMINACIÓN TTR ---
+with tab1:
+    st.header("Cálculo de Tarifas Teóricas")
+    st.info("Paso 2: Usá el archivo que descargaste recién como 'Archivo Base'.")
+    
+    col_menu, col_files = st.columns([1, 2])
+    
+    with col_menu:
+        st.subheader("Configuración")
+        tipo_ttr = st.selectbox("Jurisdicción", ["DF (Distrito Federal)", "JN (Nación)", "PBA"])
+        mes = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
+        anio = st.number_input("Año", value=2026)
+        
+        btn_procesar = st.button("🚀 Procesar esta zona", type="primary", use_container_width=True)
+        
+        # Botón de Consolidado Final
+        if all(k in st.session_state for k in ['df_res_caba', 'df_res_jn', 'df_res_pba']):
+            st.divider()
+            st.balloons()
+            df_final = consolidar_excels(st.session_state['df_res_caba'], st.session_state['df_res_jn'], st.session_state['df_res_pba'])
+            
+            out_final = io.BytesIO()
+            with pd.ExcelWriter(out_final, engine='xlsxwriter') as writer:
+                df_final.to_excel(writer, index=False, sheet_name='Consolidado')
+            out_final.seek(0)
+            
+            st.download_button("📥 DESCARGAR REPORTE UNIFICADO", out_final, f"TTR_Consolidado_{mes}.xlsx", use_container_width=True)
+
+    with col_files:
+        st.subheader("Carga de Excels")
+        f_base = st.file_uploader("Archivo Base (el que bajaste de la pestaña 2)", type=['xlsx'])
+        f_nom_ts = st.file_uploader("Nomenclador TS", type=['xlsx'])
+        f_nom_gt = st.file_uploader("Nomenclador GT", type=['xlsx'])
+        f_ttr = st.file_uploader("TTR Resoluciones", type=['xlsx'])
+        f_dic = st.file_uploader("Diccionarios", type=['xlsx'])
+
+    if btn_procesar:
+        if not (f_base and f_nom_ts and f_nom_gt and f_ttr and f_dic):
+            st.error("Cargá los 5 archivos primero.")
+        else:
+            with st.spinner("Calculando..."):
+                try:
+                    if tipo_ttr == "DF (Distrito Federal)":
+                        st.session_state['df_res_caba'] = tool_procesar_df(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
+                        st.success("✅ CABA listo.")
+                    elif tipo_ttr == "JN (Nación)":
+                        st.session_state['df_res_jn'] = tool_procesar_jn(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
+                        st.success("✅ JN listo.")
+                    else:
+                        st.session_state['df_res_pba'] = tool_procesar_pba(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
+                        st.success("✅ PBA listo.")
+                except Exception as e:
+                    st.error(f"Error en proceso: {e}")
