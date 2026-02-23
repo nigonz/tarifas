@@ -615,6 +615,13 @@ with col2:
 
 st.divider()
 
+def consolidar_excels(df_caba, df_jn, df_pba):
+    df_caba['Jurisdicción'] = 'CABA'
+    df_jn['Jurisdicción'] = 'JN'
+    df_pba['Jurisdicción'] = 'PBA'
+    df_final = pd.concat([df_caba, df_jn, df_pba], ignore_index=True)
+    return df_final
+
 if st.button("🚀 Procesar", type="primary"):
 
     if not (file_base and file_nom_ts and file_nom_gt and file_ttr and file_diccionario):
