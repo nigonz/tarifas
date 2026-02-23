@@ -96,14 +96,18 @@ with tab2:
     with c1:
         f_csv = st.file_uploader("Subir CSV DGGI", type=['csv'])
     with c2:
-        f_nom = st.file_uploader("Subir Nomenclador GT", type=['xlsx'])
+        f_nom = st.file_uploader("Subir Nomenclador ", type=['xlsx'])
 
     if f_csv and f_nom:
         if st.button("🚀 Generar Base DGGI"):
             try:
-                df_csv = pd.read_csv(f_csv, encoding='ISO-8859-1', delimiter=';')
-                nom_gt = pd.read_excel(f_nom)
-                res = procesar_base_dggi(df_csv, nom_gt)
+                # Cambiamos la forma de leer para que acepte .zip o .csv directo
+                if f_dggi.name.endswith('.zip'):
+                    df_csv = pd.read_csv(f_dggi, encoding='ISO-8859-1', delimiter=';', compression='zip')
+                else:
+                    df_csv = pd.read_csv(f_dggi, encoding='ISO-8859-1', delimiter=';')
+                    nom_gt = pd.read_excel(f_nom)
+                    res = procesar_base_dggi(df_csv, nom_gt)
                 st.success("¡Base generada!")
                 st.dataframe(res.head())
                 
