@@ -577,13 +577,23 @@ def tool_procesar_pba(archivo_base, archivo_nom_ts, archivo_nom_gt, archivo_ttr,
 
     return _df2_
 
+    # *************************************************************************************************************************
+    def consolidar_excels(df_caba, df_jn, df_pba):
+        # Les agregamos una columna para saber de dónde vino cada dato (opcional pero útil)
+        df_caba['Jurisdicción'] = 'CABA'
+        df_jn['Jurisdicción'] = 'JN'
+        df_pba['Jurisdicción'] = 'PBA'
+    
+    # Los pegamos uno debajo del otro
+    df_final = pd.concat([df_caba, df_jn, df_pba], ignore_index=True)
+    return df_final
 # =============================================================================
 # 4. EL ORQUESTADOR (FRONTEND WEB - STREAMLIT)
 # =============================================================================
 
 st.set_page_config(page_title="Data TTR -", page_icon="🤖", layout="wide")
 
-st.title("🤖 Proceso Determinación de Tarifas Teóricas de Referencia")
+st.title("🤖 Tarifas Teóricas de Referencia")
 st.markdown("Subí los Excel de este mes y seleccioná la Jurisdicción. El sistema ejecutará toda la lógica automáticamente.")
 st.divider()
 
@@ -612,41 +622,52 @@ if st.button("🚀 Procesar", type="primary"):
     else:
         with st.spinner(f'Procesando las TTR de {tipo_ttr} para {mes_seleccionado} {anio_seleccionado}...'):
             try:
-                # Armamos el nombre dinámico del archivo
-                mes_str = mes_seleccionado.lower()
-
-                # Derivamos a la función experta correspondiente
+                # 1. Ejecutamos el proceso según la elección del menú
                 if tipo_ttr == "DF (Distrito Federal)":
-                    resultado_df = tool_procesar_df(file_base, file_nom_ts, file_nom_gt, file_ttr, file_diccionario, anio_seleccionado)
-                    sufijo = "DF"
+                    st.session_state['df_resultado_caba'] = tool_procesar_df(file_base, file_nom_ts, file_nom_gt, file_ttr, file_diccionario, anio_seleccionado)
+                    st.success("✅ CABA procesado y guardado en memoria.")
+                
                 elif tipo_ttr == "JN (Nación)":
-                    resultado_df = tool_procesar_jn(file_base, file_nom_ts, file_nom_gt, file_ttr, file_diccionario, anio_seleccionado)
-                    sufijo = "JN"
+                    st.session_state['df_resultado_jn'] = tool_procesar_jn(file_base, file_nom_ts, file_nom_gt, file_ttr, file_diccionario, anio_seleccionado)
+                    st.success("✅ JN procesado y guardado en memoria.")
+                
                 else:
-                    resultado_df = tool_procesar_pba(file_base, file_nom_ts, file_nom_gt, file_ttr, file_diccionario, anio_seleccionado)
-                    sufijo = "PBA"
+                    st.session_state['df_resultado_pba'] = tool_procesar_pba(file_base, file_nom_ts, file_nom_gt, file_ttr, file_diccionario, anio_seleccionado)
+                    st.success("✅ PBA procesado y guardado en memoria.")
 
-                nombre_archivo_salida = f"matcheo_ttr_{mes_str}_{anio_seleccionado}_{sufijo}.xlsx"
-
-                st.success(f"✅ ¡Procesamiento de {tipo_ttr} completado con éxito!")
-
-                # Preparamos el archivo para descargar
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                    resultado_df.to_excel(writer, index=False)
-
-                st.download_button(
-                    label=f"📥 Descargar {nombre_archivo_salida}",
-                    data=buffer.getvalue(),
-                    file_name=nombre_archivo_salida,
-                    mime="application/vnd.ms-excel"
-                )
+                # 2. Verificamos si ya tenemos los tres para mostrar el botón de descarga unificada
+                if all(k in st.session_state for k in ['df_resultado_caba', 'df_resultado_jn', 'df_resultado_pba']):
+                    st.balloons() # ¡Festejo porque terminaste los tres!
+                    
+                    # Consolidamos
+                    df_final = consolidar_excels(
+                        st.session_state['df_resultado_caba'], 
+                        st.session_state['df_resultado_jn'], 
+                        st.session_state['df_resultado_pba']
+                    )
+                    
+                    # Preparamos el Excel
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        df_final.to_excel(writer, index=False, sheet_name='Consolidado_TTR')
+                    output.seek(0)
+                    
+                    st.divider()
+                    st.download_button(
+                        label="📥 DESCARGAR REPORTE UNIFICADO (CABA+JN+PBA)",
+                        data=output,
+                        file_name=f"TTR_Consolidado_{mes_seleccionado}_{anio_seleccionado}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        type="primary"
+                    )
+                else:
+                    faltan = []
+                    if 'df_resultado_caba' not in st.session_state: faltan.append("CABA")
+                    if 'df_resultado_jn' not in st.session_state: faltan.append("JN")
+                    if 'df_resultado_pba' not in st.session_state: faltan.append("PBA")
+                    st.info(f"💡 Te falta procesar: {', '.join(faltan)} para habilitar la descarga unificada.")
 
             except Exception as e:
-                st.error(f"❌ El sistema encontró un error crítico: {e}")
-
-
-
-
-
+                st.error(f"❌ Error en el proceso: {str(e)}")
 
