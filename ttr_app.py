@@ -8,46 +8,33 @@ import io
 # 1. FUNCIONES MAESTRAS (EL MOTOR)
 # =============================================================================
 
-def procesar_base_dggi(df_csv, nom_gt):
-    # 1. Filtrar por líneas válidas en el nomenclador
-    df_ = df_csv[df_csv['ID_LINEA'].isin(nom_gt['ID_LINEA'])].copy()
+def procesar_base_dggi(f_csv, nom_gt):
+    # Creamos una lista para ir guardando los pedazos procesados
+    lista_pedazos = []
     
-    # 2. Seleccionar columnas necesarias
-    cols_interes = ['ID_EMPRESA', 'ID_LINEA','RAMAL','TARIFA BASE ITG', 'DEBITADO', 'CONTRATO', 
-                    'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'MONTO']
-    df_ = df_[cols_interes]
-
-    # 3. Agrupar y sumarizar
-    _df_ = df_.groupby(['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO','TARIFA BASE ITG', 'DEBITADO',
-                        'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION'], as_index=False).agg({
-        'CANTIDAD_USOS': 'sum',
-        'MONTO': 'sum'
-    })
-
-    # 4. Merge con Nomenclador para traer datos geográficos y GT
-    cols_nom = ['ID_LINEA', 'GT', 'Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']
-    _df2_ = pd.merge(_df_, nom_gt[cols_nom], how='left', on='ID_LINEA')
-
-    # 5. Cálculos de componentes
-    _df2_['BE'] = np.where(_df2_['CONTRATO'].isin([830, 831, 832, 833]), 'SI', 'NO')
+    # Determinamos si es zip o csv
+    compression = 'zip' if f_csv.name.endswith('.zip') else None
     
-    for col in ['TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'CONTRATO']:
-        _df2_[col] = pd.to_numeric(_df2_[col], errors='coerce')
-
-    _df2_['COMP. ITG'] = _df2_['DESCUENTO X INTEGRACION'] * _df2_['CANTIDAD_USOS']
+    # Leemos el archivo de a 50.000 filas por vez
+    for chunk in pd.read_csv(f_csv, encoding='ISO-8859-1', delimiter=';', 
+                             compression=compression, chunksize=50000):
+        
+        # Aplicamos el filtro del nomenclador a este pedacito
+        chunk_filtrado = chunk[chunk['ID_LINEA'].isin(nom_gt['ID_LINEA'])].copy()
+        
+        if not chunk_filtrado.empty:
+            # Aquí podés meter la lógica de limpieza que ya tenías
+            lista_pedazos.append(chunk_filtrado)
+            
+    # Juntamos todos los pedacitos filtrados en un solo DataFrame
+    if not lista_pedazos:
+        return pd.DataFrame()
+        
+    df_final = pd.concat(lista_pedazos, ignore_index=True)
     
-    _df2_['COMP. ATS'] = _df2_.apply(
-        lambda x: ((x['DEBITADO'] / 0.45 * 0.55) * x['CANTIDAD_USOS'] if x['GT'] == 'INP' 
-        else (x['TARIFA BASE ITG'] - x['DEBITADO'] - x['DESCUENTO X INTEGRACION']) * x['CANTIDAD_USOS']) 
-        if x['CONTRATO'] == 621 else 0, axis=1
-    )
+    # ... acá seguís con los cálculos de COMP. ATS, ITG, etc. que ya tenés ...
+    return df_final
     
-    _df2_['COMP. ATS s/IVA'] = _df2_['COMP. ATS'] / 1.105
-    _df2_['COMP. ITG s/IVA'] = _df2_['COMP. ITG'] / 1.105
-    
-    _df2_.loc[_df2_['GT'] == 'DF', 'PROVINCIA'] = 'CABA'
-    return _df2_
-
 def consolidar_excels(df_caba, df_jn, df_pba):
     df_caba['Jurisdicción'] = 'CABA'
     df_jn['Jurisdicción'] = 'JN'
@@ -94,7 +81,7 @@ with tab2:
     
     c1, c2 = st.columns(2)
     with c1:
-        f_csv = st.file_uploader("Subir CSV DGGI", type=['csv'])
+        f_csv = st.file_uploader("Subir CSV DGGI", type=['csv', 'zip'])
     with c2:
         f_nom = st.file_uploader("Subir Nomenclador ", type=['xlsx'])
 
