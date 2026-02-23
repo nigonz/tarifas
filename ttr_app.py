@@ -8,15 +8,14 @@ import io
 # 1. FUNCIONES MAESTRAS (EL MOTOR)
 # =============================================================================
 
-def procesar_base_dggi(f_csv, nom_gt):
+def procesar_base_dggi(f_dggi, nom_gt):
     # Creamos una lista para ir guardando los pedazos procesados
     lista_pedazos = []
     
     # Determinamos si es zip o csv
-    compression = 'zip' if f_csv.name.endswith('.zip') else None
-    
+    compression = 'zip' if f_dggi.name.endswith('.zip') else None    
     # Leemos el archivo de a 50.000 filas por vez
-    for chunk in pd.read_csv(f_csv, encoding='ISO-8859-1', delimiter=';', 
+    for chunk in pd.read_csv(f_dggi, encoding='ISO-8859-1', delimiter=';', 
                              compression=compression, chunksize=50000):
         
         # Aplicamos el filtro del nomenclador a este pedacito
@@ -86,27 +85,25 @@ with tab2:
         f_nom = st.file_uploader("Subir Nomenclador ", type=['xlsx'])
 
     if f_csv and f_nom:
+       if f_csv and f_nom:
         if st.button("🚀 Generar Base DGGI"):
             try:
-                # Cambiamos la forma de leer para que acepte .zip o .csv directo
-                if f_dggi.name.endswith('.zip'):
-                    df_csv = pd.read_csv(f_dggi, encoding='ISO-8859-1', delimiter=';', compression='zip')
+                # Ya no usamos pd.read_csv acá, porque la función nueva
+                # se encarga de leerlo por partes directamente.
+                nom_gt = pd.read_excel(f_nom)
+                
+                # Llamamos a la función pasándole f_csv
+                res = procesar_base_dggi(f_csv, nom_gt)
+                
+                if not res.empty:
+                    st.success("¡Base generada con éxito procesando por partes!")
+                    st.dataframe(res.head())
+                    # ... (resto de tu código de descarga)
                 else:
-                    df_csv = pd.read_csv(f_dggi, encoding='ISO-8859-1', delimiter=';')
-                    nom_gt = pd.read_excel(f_nom)
-                    res = procesar_base_dggi(df_csv, nom_gt)
-                st.success("¡Base generada!")
-                st.dataframe(res.head())
-                
-                output_dggi = io.BytesIO()
-                with pd.ExcelWriter(output_dggi, engine='xlsxwriter') as writer:
-                    res.to_excel(writer, index=False, sheet_name='Base')
-                output_dggi.seek(0)
-                
-                st.download_button("📥 Descargar Base DGGI", output_dggi, "base_dggi_procesada.xlsx")
+                    st.warning("⚠️ No se encontraron datos para procesar con ese nomenclador.")
+                    
             except Exception as e:
                 st.error(f"Error: {e}")
-
 with tab1:
     st.header("Determinación de TTR")
     # ACÁ VAN TUS SELECTORES (Jurisdicción, Mes, Año)
