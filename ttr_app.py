@@ -661,33 +661,13 @@ with tab2:
                     st.error(f"Error técnico: {e}")
 
 # --- PESTAÑA 1: TTR ---
+# --- PESTAÑA 1: TTR ---
 with tab1:
     st.header("Cálculo de Tarifas Teóricas")
     st.info("Paso 2: Usá el archivo que descargaste recién como 'Archivo Base'.")
     
     col_menu, col_files = st.columns([1, 2])
     
-    with col_menu:
-        st.subheader("Configuración")
-        tipo_ttr = st.selectbox("Jurisdicción", ["DF (Distrito Federal)", "JN (Nación)", "PBA"])
-        mes = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
-        anio = st.number_input("Año", value=2026)
-        
-        btn_procesar = st.button("🚀 Procesar esta zona", type="primary", use_container_width=True)
-        
-        # Botón de Consolidado Final
-        if all(k in st.session_state for k in ['df_res_caba', 'df_res_jn', 'df_res_pba']):
-            st.divider()
-            st.balloons()
-            df_final = consolidar_excels(st.session_state['df_res_caba'], st.session_state['df_res_jn'], st.session_state['df_res_pba'])
-            
-            out_final = io.BytesIO()
-            with pd.ExcelWriter(out_final, engine='xlsxwriter') as writer:
-                df_final.to_excel(writer, index=False, sheet_name='Consolidado')
-            out_final.seek(0)
-            
-            st.download_button("📥 DESCARGAR REPORTE UNIFICADO", out_final, f"TTR_Consolidado_{mes}.xlsx", use_container_width=True)
-
     with col_files:
         st.subheader("Carga de Excels")
         f_base = st.file_uploader("Archivo Base (el que bajaste de la pestaña 2)", type=['xlsx'])
@@ -696,11 +676,20 @@ with tab1:
         f_ttr = st.file_uploader("TTR Resoluciones", type=['xlsx'])
         f_dic = st.file_uploader("Diccionarios", type=['xlsx'])
 
+    with col_menu:
+        st.subheader("Configuración")
+        tipo_ttr = st.selectbox("Jurisdicción", ["DF (Distrito Federal)", "JN (Nación)", "PBA"])
+        mes = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
+        anio = st.number_input("Año", value=2026)
+        
+        btn_procesar = st.button("🚀 Procesar esta zona", type="primary", use_container_width=True)
+
+    # 1. EJECUTAR EL CÁLCULO PRIMERO
     if btn_procesar:
         if not (f_base and f_nom_ts and f_nom_gt and f_ttr and f_dic):
             st.error("Cargá los 5 archivos primero.")
         else:
-            with st.spinner("Calculando..."):
+            with st.spinner(f"Calculando {tipo_ttr}..."):
                 try:
                     if tipo_ttr == "DF (Distrito Federal)":
                         st.session_state['df_res_caba'] = tool_procesar_df(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
@@ -713,3 +702,24 @@ with tab1:
                         st.success("✅ PBA listo.")
                 except Exception as e:
                     st.error(f"Error en proceso: {e}")
+
+    # 2. MOSTRAR EL BOTÓN DESPUÉS (Ahora sí sabrá que están los 3)
+    if all(k in st.session_state for k in ['df_res_caba', 'df_res_jn', 'df_res_pba']):
+        st.divider()
+        st.success("🎉 ¡Las 3 jurisdicciones están procesadas!")
+        st.balloons() # ¡Un festejo en pantalla!
+        
+        df_final = consolidar_excels(st.session_state['df_res_caba'], st.session_state['df_res_jn'], st.session_state['df_res_pba'])
+        
+        out_final = io.BytesIO()
+        with pd.ExcelWriter(out_final, engine='xlsxwriter') as writer:
+            df_final.to_excel(writer, index=False, sheet_name='Consolidado')
+        out_final.seek(0)
+        
+        st.download_button(
+            label="📥 DESCARGAR REPORTE UNIFICADO", 
+            data=out_final, 
+            file_name=f"TTR_Consolidado_{mes}.xlsx", 
+            use_container_width=True, 
+            type="primary"
+        )
