@@ -12,25 +12,25 @@ def procesar_base_dggi(f_csv, nom_gt):
     # 1. CARGA COMPLETA (Sin pedazos/chunks para no triplicar registros)
     compression = 'zip' if f_csv.name.endswith('.zip') else None
     
-    # Leemos el millón de filas de una vez. low_memory=False ayuda con la RAM.
+    # Leemos todo el millón de filas de una vez
     df = pd.read_csv(f_csv, encoding='ISO-8859-1', delimiter=';', 
                      compression=compression, low_memory=False)
+
+    # Forzamos ID_LINEA a texto para un filtrado perfecto
+    df['ID_LINEA'] = df['ID_LINEA'].astype(str).str.strip()
+    nom_gt['ID_LINEA'] = nom_gt['ID_LINEA'].astype(str).str.strip()
 
     # 2. FILTRADO (Línea 28 de tu Colab)
     df_ = df[df['ID_LINEA'].isin(nom_gt['ID_LINEA'])].copy()
 
     # 3. SELECCIÓN DE COLUMNAS (Línea 33 de tu Colab)
-    # Incluimos 'TOTAL DESC POR INTEGRACION' que aparece en tu script nuevo
     df_ramal = ['ID_EMPRESA', 'ID_LINEA','RAMAL','TARIFA BASE ITG', 'DEBITADO', 'CONTRATO', 
-                'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'MONTO', 
-                'TOTAL DESC POR INTEGRACION']
+                'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'MONTO']
     
-    # Filtramos columnas existentes por seguridad
-    df_ramal = [c for c in df_ramal if c in df_.columns]
-    df_ = df_[df_ramal]
+    df_ramal_ok = [c for c in df_ramal if c in df_.columns]
+    df_ = df_[df_ramal_ok]
 
-    # 4. AGRUPACIÓN GLOBAL (Línea 38 de tu Colab)
-    # Este es el paso que garantiza los 81.000 registros finales
+    # 4. AGRUPACIÓN GLOBAL (Línea 38 de tu Colab - Da los 83.142 registros)
     _df_ = df_.groupby(['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO','TARIFA BASE ITG', 'DEBITADO',
                         'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION'],
                         as_index=False).agg({
@@ -40,7 +40,6 @@ def procesar_base_dggi(f_csv, nom_gt):
 
     # 5. MERGE GEOGRÁFICO (Línea 47 de tu Colab)
     columns_to_merge = ['ID_LINEA', 'GT', 'Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']
-    # Usamos drop_duplicates en el nomenclador para que el merge no duplique filas
     _df2_ = pd.merge(_df_, nom_gt[columns_to_merge].drop_duplicates(subset=['ID_LINEA']), 
                      how='left', on='ID_LINEA')
 
@@ -64,62 +63,6 @@ def procesar_base_dggi(f_csv, nom_gt):
     _df2_['COMP. ITG s/IVA'] = _df2_['COMP. ITG'] / 1.105
     _df2_.loc[_df2_['GT'] == 'DF', 'PROVINCIA'] = 'CABA'
 
-    return _df2_
-def consolidar_excels(df_caba, df_jn, df_pba):
-    """Une los tres resultados en uno solo"""
-    df_caba['Jurisdicción'] = 'CABA'
-    df_jn['Jurisdicción'] = 'JN'
-    df_pba['Jurisdicción'] = 'PBA'
-    return pd.concat([df_caba, df_jn, df_pba], ignore_index=True)
-
-# Aquí van tus funciones tool_procesar_df, tool_procesar_jn y tool_procesar_pba
-# Asegurate de que estén pegadas al borde izquierdo (sin espacios antes de 'def')
-# [PEGAR TUS 3 FUNCIONES AQUÍ]
-# =============================================================================
-# FUNCIONES DE PROCESAMIENTO POR JURISDICCIÓN
-# =============================================================================
-
-def tool_procesar_df(archivo_base, archivo_nom_ts, archivo_nom_gt, archivo_ttr, archivo_diccionario, anio):
-    df1 = pd.read_excel(archivo_base, sheet_name='Base')
-    nom_ts = pd.read_excel(archivo_nom_ts)
-    nom_gt = pd.read_excel(archivo_nom_gt)
-    ttr_reso = pd.read_excel(archivo_ttr, sheet_name='TTR')
-
-    var_input = ['Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO', 'GT', 'ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'TARIFA BASE ITG', 'DEBITADO','CANTIDAD_USOS']
-    df2 = df1[var_input].copy()
-    df2 = df2[df2['GT'].isin(["DF"])]
-
-    _df2_ = pd.merge(df2, nom_gt[['ID_LINEA', 'GT']], how='left', on='ID_LINEA')
-    _df2_['CANTIDAD_USOS'] = pd.to_numeric(_df2_['CANTIDAD_USOS'].astype(str).replace({',': ''}, regex=True), errors='coerce').fillna(0)
-    _df2_['TARIFA BASE ITG'] = pd.to_numeric(_df2_['TARIFA BASE ITG'].astype(str).replace({',': ''}, regex=True), errors='coerce').fillna(0)
-
-    _df2_.drop('GT_y', axis=1, inplace=True, errors='ignore')
-    _df2_.rename(columns={"GT_x": "GT"}, inplace=True)
-
-    _df2_['RAMAL'] = _df2_['RAMAL'].astype(float).astype(int).astype(str)
-    nom_ts["IdRamalNS"] = nom_ts["IdRamalNS"].astype(str).str.strip()
-
-    _df2_ = pd.merge(_df2_, nom_ts[['IdRamalNS', 'TIPO DE SERVICIO FINAL']], how='left', left_on='RAMAL', right_on='IdRamalNS')
-    _df2_.rename(columns={'TIPO DE SERVICIO FINAL': 'TipoServicio'}, inplace=True)
-    
-    _df2_['sin_nominalizar'] = _df2_['CONTRATO'].apply(lambda x: 1 if x == 627 else 0)
-    _df2_['PASES'] = _df2_['TARIFA BASE ITG'].apply(lambda x: 1 if 0 <= x <= 0.5 else 0)
-    _df2_['FILTRO_1'] = np.where((_df2_['TARIFA BASE ITG'] < 525.65) & (_df2_['TARIFA BASE ITG'] > 0.5), 1, 0)
-
-    # Diccionario DF
-    df_completo = pd.read_excel(archivo_diccionario, sheet_name='DF01')
-    df_completo['Id'] = df_completo['Id'].astype(str).str.strip()
-    
-    # Lógica de Tarifas (Simplificada para el bloque)
-    df_tarifas_1 = df_completo.iloc[0:15]
-    for _, row in df_tarifas_1.iterrows():
-        col, lim_inf, lim_sup = row['Id'], row['Minimo'], row['Maximo']
-        _df2_[col] = np.where((_df2_['TARIFA BASE ITG'] >= lim_inf - 0.5) & (_df2_['TARIFA BASE ITG'] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] != 1), 1, 0)
-
-    _df2_['final_seccion'] = _df2_[['sec_1', 'sec_2', 'sec_3', 'sec_4', 'sec_5']].sum(axis=1) # Simplificado
-    _df2_['Año'] = anio
-    _df2_['Resolucion'] = '36'
-    
     return _df2_
 
 def tool_procesar_jn(archivo_base, archivo_nom_ts, archivo_nom_gt, archivo_ttr, archivo_diccionario, anio):
@@ -169,41 +112,43 @@ tab1, tab2 = st.tabs(["🚀 DETERMINACIÓN TTR", "📂 PRE-PROCESO DGGI"])
 # --- PESTAÑA 2: PRE-PROCESO ---
 with tab2:
     st.header("Generador de Base DGGI")
-    st.info("Paso 1: Subí el CSV (o .zip) de la DGGI para generar el archivo base.")
+    st.info("Paso 1: Generá la base DGGI limpia. Recordá que el crudo de usos debe subirse en .zip.")
     
     c1, c2 = st.columns(2)
     with c1:
-        f_csv = st.file_uploader("1. Archivo DGGI", type=['csv', 'zip'])
+        f_csv = st.file_uploader("1. Archivo DGGI (Crudo de Usos)", type=['csv', 'zip'])
     with c2:
         f_nom = st.file_uploader("2. Nomenclador GT", type=['xlsx'])
 
     if f_csv and f_nom:
         if st.button("🚀 Generar Base DGGI"):
-            with st.spinner("Procesando archivo pesado..."):
+            with st.spinner("Procesando el millón de filas... Esto puede tardar 20 segundos."):
                 try:
                     nom_gt = pd.read_excel(f_nom)
                     res = procesar_base_dggi(f_csv, nom_gt)
                     
                     if not res.empty:
-                        st.success("¡Base generada con éxito!")
-                        st.write(f"Filas totales: {len(res):,}") # Mostramos cuántas filas son
+                        st.success(f"¡Base generada! Registros: {len(res):,}")
                         st.dataframe(res.head()) 
 
-                        # Generamos el CSV para evitar el límite de filas de Excel
-                        csv_data = res.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                        # EXCEL EN LUGAR DE CSV: Para que la Tab 1 lo lea sin problemas
+                        output_dggi = io.BytesIO()
+                        with pd.ExcelWriter(output_dggi, engine='xlsxwriter') as writer:
+                            # 'Base' es el nombre que buscan tus funciones tool_procesar
+                            res.to_excel(writer, index=False, sheet_name='Base')
+                        output_dggi.seek(0)
 
                         st.download_button(
-                            label="📥 DESCARGAR BASE DGGI (FORMATO CSV)",
-                            data=csv_data,
-                            file_name="base_dggi_completa.csv",
-                            mime="text/csv",
+                            label="📥 DESCARGAR BASE DGGI (.XLSX)",
+                            data=output_dggi,
+                            file_name="base_dggi_para_ttr.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
                     else:
-                        st.warning("⚠️ No se encontraron datos que coincidan con el nomenclador.")
-                        
+                        st.warning("⚠️ No se encontraron datos coincidentes.")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error técnico: {e}")
 with tab1:
     st.header("Cálculo de Tarifas Teóricas")
     st.info("Paso 2: Usá el archivo que descargaste recién como 'Archivo Base'.")
