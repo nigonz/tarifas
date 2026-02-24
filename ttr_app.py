@@ -685,47 +685,47 @@ with tab1:
         btn_procesar_todo = st.button("🚀 Procesar TODAS y Consolidar", type="primary", use_container_width=True)
 
     # LÓGICA DE PROCESAMIENTO MÚLTIPLE
+    # LÓGICA DE PROCESAMIENTO MÚLTIPLE
     if btn_procesar_todo:
         if not (f_base and f_nom_ts and f_nom_gt and f_ttr and f_dic):
             st.error("⚠️ Cargá los 5 archivos primero.")
         else:
-            with st.spinner("Procesando las 3 jurisdicciones... Esto puede llevar un minuto."):
+            with st.spinner("Procesando y unificando las 3 jurisdicciones... Esto puede llevar un minuto."):
                 try:
-                    # 1. Procesa CABA
+                    # 1. Procesar
                     df_caba = tool_procesar_df(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
                     st.success("✅ CABA listo.")
                     
-                    # 2. Procesa JN
                     df_jn = tool_procesar_jn(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
                     st.success("✅ JN (Nación) listo.")
                     
-                    # 3. Procesa PBA
                     df_pba = tool_procesar_pba(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
                     st.success("✅ PBA listo.")
                     
-                    # 4. Usa tu función para unir los 3 archivos
+                    # 2. Consolidar
                     df_final = consolidar_excels(df_caba, df_jn, df_pba)
                     
-                    # Lo guarda en la memoria segura
-                    st.session_state['df_consolidado'] = df_final
+                    # 3. EMPAQUETAR EL EXCEL ACÁ ADENTRO (Para que no congele la app después)
+                    st.info("Armando el archivo Excel final... (Aguardá unos segundos)")
+                    out_final = io.BytesIO()
+                    with pd.ExcelWriter(out_final, engine='xlsxwriter') as writer:
+                        df_final.to_excel(writer, index=False, sheet_name='Consolidado')
+                    
+                    # 4. Guardar el archivo ya armado en la memoria de la página
+                    st.session_state['excel_consolidado'] = out_final.getvalue()
                     st.balloons()
                     
                 except Exception as e:
                     st.error(f"Error durante el proceso: {e}")
 
-    # BOTÓN DE DESCARGA (Siempre visible si el proceso terminó bien)
-    if 'df_consolidado' in st.session_state:
+    # BOTÓN DE DESCARGA (Fijo e instantáneo)
+    if 'excel_consolidado' in st.session_state:
         st.divider()
-        st.success("🎉 ¡El archivo Consolidado está listo!")
-        
-        out_final = io.BytesIO()
-        with pd.ExcelWriter(out_final, engine='xlsxwriter') as writer:
-            st.session_state['df_consolidado'].to_excel(writer, index=False, sheet_name='Consolidado')
-        out_final.seek(0)
+        st.success("🎉 ¡El archivo Consolidado está listo para descargar!")
         
         st.download_button(
             label="📥 DESCARGAR REPORTE UNIFICADO", 
-            data=out_final, 
+            data=st.session_state['excel_consolidado'], 
             file_name=f"TTR_Consolidado_{mes}_{anio}.xlsx", 
             use_container_width=True, 
             type="primary"
