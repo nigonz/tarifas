@@ -112,13 +112,13 @@ tab1, tab2 = st.tabs(["🚀 DETERMINACIÓN TTR", "📂 PRE-PROCESO DGGI"])
 # --- PESTAÑA 2: PRE-PROCESO ---
 with tab2:
     st.header("Generador de Base DGGI")
-    st.info("Paso 1: Generá la base DGGI limpia. Recordá que el crudo de usos debe subirse en .zip.")
+    st.info("Paso 1: Subí el crudo de usos (.zip) para generar el archivo base de 83.142 registros.")
     
     c1, c2 = st.columns(2)
     with c1:
-        f_csv = st.file_uploader("1. Archivo DGGI (Crudo de Usos)", type=['csv', 'zip'])
+        f_csv = st.file_uploader("1. Archivo DGGI (Crudo en .zip)", type=['csv', 'zip'])
     with c2:
-        f_nom = st.file_uploader("2. Nomenclador GT", type=['xlsx'])
+        f_nom = st.file_uploader("2. Nomenclador GT (.xlsx)", type=['xlsx'])
 
     if f_csv and f_nom:
         if st.button("🚀 Generar Base DGGI"):
@@ -128,25 +128,26 @@ with tab2:
                     res = procesar_base_dggi(f_csv, nom_gt)
                     
                     if not res.empty:
-                        st.success(f"¡Base generada! Registros: {len(res):,}")
+                        st.success(f"¡Base generada con éxito! Filas totales: {len(res):,}")
                         st.dataframe(res.head()) 
 
-                        # EXCEL EN LUGAR DE CSV: Para que la Tab 1 lo lea sin problemas
+                        # --- IMPORTANTE: DESCARGA EN EXCEL PARA LA TAB 1 ---
+                        # Como son 83k filas, Excel es mejor y lo pide tu función tool_procesar
                         output_dggi = io.BytesIO()
                         with pd.ExcelWriter(output_dggi, engine='xlsxwriter') as writer:
-                            # 'Base' es el nombre que buscan tus funciones tool_procesar
+                            # 'Base' es el nombre que buscan tus funciones en la Tab 1
                             res.to_excel(writer, index=False, sheet_name='Base')
                         output_dggi.seek(0)
 
                         st.download_button(
-                            label="📥 DESCARGAR BASE DGGI (.XLSX)",
+                            label="📥 DESCARGAR BASE PARA TTR (.XLSX)",
                             data=output_dggi,
-                            file_name="base_dggi_para_ttr.xlsx",
+                            file_name="base_dggi_procesada.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
                     else:
-                        st.warning("⚠️ No se encontraron datos coincidentes.")
+                        st.warning("⚠️ No se encontraron coincidencias en el nomenclador.")
                 except Exception as e:
                     st.error(f"Error técnico: {e}")
 with tab1:
