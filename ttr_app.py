@@ -9,22 +9,28 @@ import io
 # =============================================================================
 
 def procesar_base_dggi(f_csv, nom_gt):
-    # 1. LEER TODO DE UNA (Sin pedazos para que la agrupación sea correcta)
+    # 1. CARGA COMPLETA (Sin pedazos/chunks para no triplicar registros)
     compression = 'zip' if f_csv.name.endswith('.zip') else None
     
-    # Usamos low_memory=False para que Python no se queje con archivos grandes
+    # Leemos el millón de filas de una vez. low_memory=False ayuda con la RAM.
     df = pd.read_csv(f_csv, encoding='ISO-8859-1', delimiter=';', 
                      compression=compression, low_memory=False)
 
-    # 2. FILTRADO (Tu lógica original sin cambios)
+    # 2. FILTRADO (Línea 28 de tu Colab)
     df_ = df[df['ID_LINEA'].isin(nom_gt['ID_LINEA'])].copy()
 
-    # Columnas a conservar
-    df_ramal = ['ID_EMPRESA', 'ID_LINEA','RAMAL','TARIFA BASE ITG', 'DEBITADO', 
-                'CONTRATO', 'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'MONTO']
+    # 3. SELECCIÓN DE COLUMNAS (Línea 33 de tu Colab)
+    # Incluimos 'TOTAL DESC POR INTEGRACION' que aparece en tu script nuevo
+    df_ramal = ['ID_EMPRESA', 'ID_LINEA','RAMAL','TARIFA BASE ITG', 'DEBITADO', 'CONTRATO', 
+                'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'MONTO', 
+                'TOTAL DESC POR INTEGRACION']
+    
+    # Filtramos columnas existentes por seguridad
+    df_ramal = [c for c in df_ramal if c in df_.columns]
     df_ = df_[df_ramal]
 
-    # 3. AGRUPACIÓN (Esto es lo que colapsa el millón de filas en 81.000)
+    # 4. AGRUPACIÓN GLOBAL (Línea 38 de tu Colab)
+    # Este es el paso que garantiza los 81.000 registros finales
     _df_ = df_.groupby(['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO','TARIFA BASE ITG', 'DEBITADO',
                         'VIAJE INTEGRADO', 'DESCUENTO X INTEGRACION'],
                         as_index=False).agg({
@@ -32,12 +38,32 @@ def procesar_base_dggi(f_csv, nom_gt):
         'MONTO': 'sum'
     })
 
-    # 4. RESTO DEL PROCESO (Idéntico al original)
+    # 5. MERGE GEOGRÁFICO (Línea 47 de tu Colab)
     columns_to_merge = ['ID_LINEA', 'GT', 'Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']
-    _df2_ = pd.merge(_df_, nom_gt[columns_to_merge].drop_duplicates(), how='left', on='ID_LINEA')
-    
-    # ... (Cálculos de ATS, ITG, etc. tal cual los tenés)
-    
+    # Usamos drop_duplicates en el nomenclador para que el merge no duplique filas
+    _df2_ = pd.merge(_df_, nom_gt[columns_to_merge].drop_duplicates(subset=['ID_LINEA']), 
+                     how='left', on='ID_LINEA')
+
+    # 6. CÁLCULOS FINALES (Líneas 53 a 85 de tu Colab)
+    _df2_['BE'] = np.where(_df2_['CONTRATO'].isin([830, 831, 832, 833]), 'SI', 'NO')
+
+    for col in ['TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'CONTRATO']:
+        _df2_[col] = pd.to_numeric(_df2_[col], errors='coerce')
+
+    _df2_['TipoContrato'] = _df2_['CONTRATO'].apply(lambda x: 'ATS' if x == 621 else 'SIN ATS')
+    _df2_['COMP. ITG'] = _df2_['DESCUENTO X INTEGRACION'] * _df2_['CANTIDAD_USOS']
+
+    _df2_['COMP. ATS'] = _df2_.apply(
+        lambda x: (
+            (x['DEBITADO'] / 0.45 * 0.55) * x['CANTIDAD_USOS'] if x['GT'] == 'INP'
+            else (x['TARIFA BASE ITG'] - x['DEBITADO'] - x['DESCUENTO X INTEGRACION']) * x['CANTIDAD_USOS']
+        ) if x['CONTRATO'] == 621 else 0, axis=1
+    )
+
+    _df2_['COMP. ATS s/IVA'] = _df2_['COMP. ATS'] / 1.105
+    _df2_['COMP. ITG s/IVA'] = _df2_['COMP. ITG'] / 1.105
+    _df2_.loc[_df2_['GT'] == 'DF', 'PROVINCIA'] = 'CABA'
+
     return _df2_
 def consolidar_excels(df_caba, df_jn, df_pba):
     """Une los tres resultados en uno solo"""
