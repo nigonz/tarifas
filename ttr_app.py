@@ -663,14 +663,14 @@ with tab2:
 # --- PESTAÑA 1: TTR ---
 # --- PESTAÑA 1: TTR ---
 with tab1:
-    st.header("Cálculo de Tarifas Teóricas")
-    st.info("Paso 2: Usá el archivo que descargaste recién como 'Archivo Base'.")
+    st.header("Cálculo de Tarifas Teóricas y Consolidado")
+    st.info("Paso 2: Subí el 'Archivo Base' de 83.142 registros y los nomencladores.")
     
     col_menu, col_files = st.columns([1, 2])
     
     with col_files:
         st.subheader("Carga de Excels")
-        f_base = st.file_uploader("Archivo Base (el que bajaste de la pestaña 2)", type=['xlsx'])
+        f_base = st.file_uploader("Archivo Base (Descargado de Tab 2)", type=['xlsx'])
         f_nom_ts = st.file_uploader("Nomenclador TS", type=['xlsx'])
         f_nom_gt = st.file_uploader("Nomenclador GT", type=['xlsx'])
         f_ttr = st.file_uploader("TTR Resoluciones", type=['xlsx'])
@@ -678,48 +678,55 @@ with tab1:
 
     with col_menu:
         st.subheader("Configuración")
-        tipo_ttr = st.selectbox("Jurisdicción", ["DF (Distrito Federal)", "JN (Nación)", "PBA"])
         mes = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
         anio = st.number_input("Año", value=2026)
         
-        btn_procesar = st.button("🚀 Procesar esta zona", type="primary", use_container_width=True)
+        # Un solo botón para todo
+        btn_procesar_todo = st.button("🚀 Procesar TODAS y Consolidar", type="primary", use_container_width=True)
 
-    # 1. EJECUTAR EL CÁLCULO PRIMERO
-    if btn_procesar:
+    # LÓGICA DE PROCESAMIENTO MÚLTIPLE
+    if btn_procesar_todo:
         if not (f_base and f_nom_ts and f_nom_gt and f_ttr and f_dic):
-            st.error("Cargá los 5 archivos primero.")
+            st.error("⚠️ Cargá los 5 archivos primero.")
         else:
-            with st.spinner(f"Calculando {tipo_ttr}..."):
+            with st.spinner("Procesando las 3 jurisdicciones... Esto puede llevar un minuto."):
                 try:
-                    if tipo_ttr == "DF (Distrito Federal)":
-                        st.session_state['df_res_caba'] = tool_procesar_df(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
-                        st.success("✅ CABA listo.")
-                    elif tipo_ttr == "JN (Nación)":
-                        st.session_state['df_res_jn'] = tool_procesar_jn(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
-                        st.success("✅ JN listo.")
-                    else:
-                        st.session_state['df_res_pba'] = tool_procesar_pba(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
-                        st.success("✅ PBA listo.")
+                    # 1. Procesa CABA
+                    df_caba = tool_procesar_df(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
+                    st.success("✅ CABA listo.")
+                    
+                    # 2. Procesa JN
+                    df_jn = tool_procesar_jn(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
+                    st.success("✅ JN (Nación) listo.")
+                    
+                    # 3. Procesa PBA
+                    df_pba = tool_procesar_pba(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
+                    st.success("✅ PBA listo.")
+                    
+                    # 4. Usa tu función para unir los 3 archivos
+                    df_final = consolidar_excels(df_caba, df_jn, df_pba)
+                    
+                    # Lo guarda en la memoria segura
+                    st.session_state['df_consolidado'] = df_final
+                    st.balloons()
+                    
                 except Exception as e:
-                    st.error(f"Error en proceso: {e}")
+                    st.error(f"Error durante el proceso: {e}")
 
-    # 2. MOSTRAR EL BOTÓN DESPUÉS (Ahora sí sabrá que están los 3)
-    if all(k in st.session_state for k in ['df_res_caba', 'df_res_jn', 'df_res_pba']):
+    # BOTÓN DE DESCARGA (Siempre visible si el proceso terminó bien)
+    if 'df_consolidado' in st.session_state:
         st.divider()
-        st.success("🎉 ¡Las 3 jurisdicciones están procesadas!")
-        st.balloons() # ¡Un festejo en pantalla!
-        
-        df_final = consolidar_excels(st.session_state['df_res_caba'], st.session_state['df_res_jn'], st.session_state['df_res_pba'])
+        st.success("🎉 ¡El archivo Consolidado está listo!")
         
         out_final = io.BytesIO()
         with pd.ExcelWriter(out_final, engine='xlsxwriter') as writer:
-            df_final.to_excel(writer, index=False, sheet_name='Consolidado')
+            st.session_state['df_consolidado'].to_excel(writer, index=False, sheet_name='Consolidado')
         out_final.seek(0)
         
         st.download_button(
             label="📥 DESCARGAR REPORTE UNIFICADO", 
             data=out_final, 
-            file_name=f"TTR_Consolidado_{mes}.xlsx", 
+            file_name=f"TTR_Consolidado_{mes}_{anio}.xlsx", 
             use_container_width=True, 
             type="primary"
         )
