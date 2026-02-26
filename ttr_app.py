@@ -66,7 +66,47 @@ def procesar_base_dggi(f_csv, nom_gt):
     return _df2_
 
 def generar_reporte_segmentado(df_base):
-    """Toma la base DGGI procesada y genera el cuadro gerencial de usos por categoría"""
+#oma la base DGGI procesada y genera el cuadro gerencial de usos por categodef generar_reporte_segmentado(df_base):
+#oToma la base DGGI procesada y genera el cuadro gerencial de usos por categoría"""
+    df = df_base.copy()
+    
+    # 1. Aseguramos que las columnas sean números para poder filtrarlas
+    df['CONTRATO'] = pd.to_numeric(df['CONTRATO'], errors='coerce').fillna(0)
+    df['TARIFA BASE ITG'] = pd.to_numeric(df['TARIFA BASE ITG'], errors='coerce').fillna(0)
+    df['DESCUENTO X INTEGRACION'] = pd.to_numeric(df['DESCUENTO X INTEGRACION'], errors='coerce').fillna(0)
+    
+    # 2. Definimos las reglas de negocio en orden estricto de prioridad
+    cond_be = df['CONTRATO'].isin([830, 831, 832, 833])
+    cond_pases = df['TARIFA BASE ITG'] <= 0.50
+    cond_ats = df['CONTRATO'] == 621
+    cond_itg = df['DESCUENTO X INTEGRACION'] > 0
+    
+    condiciones = [cond_be, cond_pases, cond_ats, cond_itg]
+    etiquetas = ['Boleto Estudiantil', 'Pases', 'Tarifa con Atributo', 'Tarifa Integrada']
+    
+    # Asignamos la etiqueta (todo lo que no cumple lo anterior, es Tarifa Plena)
+    df['Sub_Categoria'] = np.select(condiciones, etiquetas, default='Tarifa Plena')
+    
+    # 3. Armar la Tabla Dinámica (Pivot) por Línea
+    col_agrupacion = 'Linea SILAS DNGFF' if 'Linea SILAS DNGFF' in df.columns else 'ID_LINEA'
+    
+    reporte = pd.pivot_table(
+        df, 
+        values='CANTIDAD_USOS', 
+        index=col_agrupacion, 
+        columns='Sub_Categoria', 
+        aggfunc='sum', 
+        fill_value=0
+    ).reset_index()
+    
+    # 4. Calcular el Total General por Línea sumando las columnas
+    columnas_cat = [c for c in reporte.columns if c != col_agrupacion]
+    reporte['Total Usos'] = reporte[columnas_cat].sum(axis=1)
+    
+    # Ordenar de mayor a menor según el total de usos para que sea fácil de leer
+    reporte = reporte.sort_values('Total Usos', ascending=False).reset_index(drop=True)
+    
+    return reportería
     df = df_base.copy()
     
     # 1. Aseguramos que las columnas sean números para poder filtrarlas
@@ -651,9 +691,10 @@ st.title("Procedimiento de Macheo TTR")
 tab1, tab2 = st.tabs(["🚀 DETERMINACIÓN TTR", "📂 PRE-PROCESO DGGI"])
 
 # --- PESTAÑA 2: PRE-PROCESO ---
+# --- PESTAÑA 2: PRE-PROCESO ---
 with tab2:
-    st.header("Generador de Base DGGI")
-    st.info("Paso 1: Subí el crudo de usos (.zip) para generar el archivo base de 83.142 registros.")
+    st.header("Generador de Base DGGI y Reporte de Usos")
+    st.info("Paso 1: Subí el crudo de usos (.zip) y el nomenclador para generar la base y el análisis.")
     
     c1, c2 = st.columns(2)
     with c1:
@@ -662,29 +703,57 @@ with tab2:
         f_nom = st.file_uploader("2. Nomenclador GT (.xlsx)", type=['xlsx'])
 
     if f_csv and f_nom:
-        if st.button("🚀 Generar Base DGGI"):
-            with st.spinner("Procesando el millón de filas... Esto puede tardar 20 segundos."):
+        if st.button("🚀 Generar Base DGGI y Análisis"):
+            with st.spinner("Procesando los datos... Esto puede tardar unos segundos."):
                 try:
                     nom_gt = pd.read_excel(f_nom)
                     res = procesar_base_dggi(f_csv, nom_gt)
                     
                     if not res.empty:
                         st.success(f"¡Base generada con éxito! Filas totales: {len(res):,}")
-                        st.dataframe(res.head()) 
-
-                        # EXCEL PARA QUE LA TAB 1 LO LEA DIRECTAMENTE
+                        
+                        # --- REPORTE SEGMENTADO ---
+                        st.divider()
+                        st.subheader("📊 Análisis de Usos Segmentados")
+                        with st.spinner("Armando el resumen analítico..."):
+                            df_reporte = generar_reporte_segmentado(res)
+                            # Mostramos la tabla en pantalla con separadores de miles
+                            st.dataframe(df_reporte.style.format(thousands=".", precision=0), use_container_width=True)
+                        
+                        # --- DESCARGAS ---
+                        st.divider()
+                        c_down1, c_down2 = st.columns(2)
+                        
+                        # Archivo 1: La base pesada (para la Tab 1)
                         output_dggi = io.BytesIO()
                         with pd.ExcelWriter(output_dggi, engine='xlsxwriter') as writer:
                             res.to_excel(writer, index=False, sheet_name='Base')
                         output_dggi.seek(0)
-
-                        st.download_button(
-                            label="📥 DESCARGAR BASE PARA TTR (.XLSX)",
-                            data=output_dggi,
-                            file_name="base_dggi_procesada.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True
-                        )
+                        
+                        with c_down1:
+                            st.download_button(
+                                label="📥 1. DESCARGAR BASE PARA TTR",
+                                data=output_dggi,
+                                file_name="base_dggi_procesada.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                            
+                        # Archivo 2: El resumen estadístico
+                        output_reporte = io.BytesIO()
+                        with pd.ExcelWriter(output_reporte, engine='xlsxwriter') as writer:
+                            df_reporte.to_excel(writer, index=False, sheet_name='Segmentado')
+                        output_reporte.seek(0)
+                        
+                        with c_down2:
+                            st.download_button(
+                                label="📥 2. DESCARGAR REPORTE DE USOS",
+                                data=output_reporte,
+                                file_name="Reporte_Usos_Segmentados.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                                type="primary"
+                            )
                     else:
                         st.warning("⚠️ No se encontraron coincidencias en el nomenclador.")
                 except Exception as e:
