@@ -66,8 +66,7 @@ def procesar_base_dggi(f_csv, nom_gt):
     return _df2_
 
 def generar_reporte_segmentado(df_base):
-#oma la base DGGI procesada y genera el cuadro gerencial de usos por categodef generar_reporte_segmentado(df_base):
-#oToma la base DGGI procesada y genera el cuadro gerencial de usos por categoría"""
+    """Toma la base DGGI procesada y genera el cuadro gerencial de usos por categoría"""
     df = df_base.copy()
     
     # 1. Aseguramos que las columnas sean números para poder filtrarlas
@@ -106,35 +105,7 @@ def generar_reporte_segmentado(df_base):
     # Ordenar de mayor a menor según el total de usos para que sea fácil de leer
     reporte = reporte.sort_values('Total Usos', ascending=False).reset_index(drop=True)
     
-    return reportería
-    df = df_base.copy()
-    
-    # 1. Aseguramos que las columnas sean números para poder filtrarlas
-    df['CONTRATO'] = pd.to_numeric(df['CONTRATO'], errors='coerce').fillna(0)
-    df['TARIFA BASE ITG'] = pd.to_numeric(df['TARIFA BASE ITG'], errors='coerce').fillna(0)
-    df['DESCUENTO X INTEGRACION'] = pd.to_numeric(df['DESCUENTO X INTEGRACION'], errors='coerce').fillna(0)
-    
-    # 2. Definimos las reglas de negocio en orden estricto de prioridad
-    cond_be = df['CONTRATO'].isin([830, 831, 832, 833])
-    cond_pases = df['TARIFA BASE ITG'] <= 0.50
-    cond_ats = df['CONTRATO'] == 621
-    cond_itg = df['DESCUENTO X INTEGRACION'] > 0
-    
-    condiciones = [cond_be, cond_pases, cond_ats, cond_itg]
-    etiquetas = ['Boleto Estudiantil', 'Pases', 'Tarifa con Atributo', 'Tarifa Integrada']
-    
-    # Asignamos la etiqueta (todo lo que no cumple lo anterior, es Tarifa Plena)
-    df['Sub_Categoria'] = np.select(condiciones, etiquetas, default='Tarifa Plena')
-    
-    # 3. Armar la Tabla Dinámica (Pivot) por Línea
-    col_agrupacion = 'Linea SILAS DNGFF' if 'Linea SILAS DNGFF' in df.columns else 'ID_LINEA'
-    
-    reporte = pd.pivot_table(
-        df, 
-        values='CANTIDAD_USOS', 
-        index=col_agrupacion, 
-        columns='Sub_Categoria',
-
+    return reporte
 def consolidar_excels(df_caba, df_jn, df_pba):
     """Une los tres resultados en uno solo"""
     df_caba['Jurisdicción'] = 'CABA'
