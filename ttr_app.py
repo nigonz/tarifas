@@ -734,7 +734,7 @@ with tab2:
 # --- PESTAÑA 1: TTR ---
 with tab1:
     st.header("Cálculo de Tarifas Teóricas y Consolidado")
-    st.info("Paso 2: Subí el 'Archivo Base' de 83.142 registros y los nomencladores.")
+    st.info("Paso 2: Subir el 'Archivo Base'  y los nomencladores.")
     
     col_menu, col_files = st.columns([1, 2])
     
