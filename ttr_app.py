@@ -628,6 +628,43 @@ def tool_procesar_pba(archivo_base, archivo_nom_ts, archivo_nom_gt, archivo_ttr,
 
     return _df2_
 
+def preparar_tabla_powerbi(df, anio, mes):
+    """
+    Toma el Excel consolidado del TTR y lo resume dejándolo listo
+    con la estructura exacta para importar a Power BI.
+    """
+    columnas_base = ['Linea SILAS DNGFF', 'GT', 'final_seccion', 'SubSeccion', 'CANTIDAD_USOS']
+    
+    # Nos aseguramos de traer solo las que existen para evitar errores
+    cols_existentes = [col for col in columnas_base if col in df.columns]
+    df_pbi = df[cols_existentes].copy()
+    
+    # Renombramos para que encaje perfecto en tu modelo de Power BI
+    df_pbi.rename(columns={
+        'Linea SILAS DNGFF': 'Linea',
+        'final_seccion': 'Secciones',
+        'SubSeccion': 'Subsecciones',
+        'CANTIDAD_USOS': 'Cant_de_Usos'
+    }, inplace=True)
+    
+    # Agregamos las columnas de tiempo
+    df_pbi['Año'] = anio
+    df_pbi['Mes'] = mes
+    df_pbi['Periodo'] = f"{anio}-{mes}" 
+    
+    # Agrupamos y colapsamos la base
+    columnas_agrupacion = ['Linea', 'GT', 'Secciones', 'Subsecciones', 'Año', 'Periodo', 'Mes']
+    cols_agrup_ok = [col for col in columnas_agrupacion if col in df_pbi.columns]
+    
+    if 'Cant_de_Usos' in df_pbi.columns:
+        df_agrupado = df_pbi.groupby(cols_agrup_ok, as_index=False).agg({
+            'Cant_de_Usos': 'sum'
+        })
+    else:
+        df_agrupado = df_pbi
+        
+    return df_agrupado
+
 
 # =============================================================================
 # 3. SEGURIDAD (EL PATOVICA)
@@ -756,7 +793,7 @@ with tab1:
 
     # LÓGICA DE PROCESAMIENTO MÚLTIPLE
     # LÓGICA DE PROCESAMIENTO MÚLTIPLE
-    if btn_procesar_todo:
+   if btn_procesar_todo:
         if not (f_base and f_nom_ts and f_nom_gt and f_ttr and f_dic):
             st.error("⚠️ Cargá los 5 archivos primero.")
         else:
@@ -772,31 +809,49 @@ with tab1:
                     df_pba = tool_procesar_pba(f_base, f_nom_ts, f_nom_gt, f_ttr, f_dic, anio)
                     st.success("✅ PBA listo.")
                     
-                    # 2. Consolidar
+                    # 2. Consolidar la base completa
                     df_final = consolidar_excels(df_caba, df_jn, df_pba)
                     
-                    # 3. EMPAQUETAR EL EXCEL ACÁ ADENTRO (Para que no congele la app después)
-                    st.info("Armando el archivo Excel final... (Aguardá unos segundos)")
+                    # 3. EMPAQUETAR EL EXCEL COMPLETO (Consolidado)
+                    st.info("Armando archivos Excel... (Aguardá unos segundos)")
                     out_final = io.BytesIO()
                     with pd.ExcelWriter(out_final, engine='xlsxwriter') as writer:
                         df_final.to_excel(writer, index=False, sheet_name='Consolidado')
-                    
-                    # 4. Guardar el archivo ya armado en la memoria de la página
                     st.session_state['excel_consolidado'] = out_final.getvalue()
+                    
+                    # 4. PREPARAR Y EMPAQUETAR LA BASE DE POWER BI
+                    df_powerbi = preparar_tabla_powerbi(df_final, anio, mes)
+                    out_pbi = io.BytesIO()
+                    with pd.ExcelWriter(out_pbi, engine='xlsxwriter') as writer:
+                        df_powerbi.to_excel(writer, index=False, sheet_name='PowerBI')
+                    st.session_state['excel_powerbi'] = out_pbi.getvalue()
+                    
                     st.balloons()
                     
                 except Exception as e:
                     st.error(f"Error durante el proceso: {e}")
 
-    # BOTÓN DE DESCARGA (Fijo e instantáneo)
-    if 'excel_consolidado' in st.session_state:
+    # BOTONES DE DESCARGA (Fijos e instantáneos)
+    if 'excel_consolidado' in st.session_state and 'excel_powerbi' in st.session_state:
         st.divider()
-        st.success("🎉 ¡El archivo Consolidado está listo para descargar!")
+        st.success("🎉 ¡Los archivos están listos para descargar!")
         
-        st.download_button(
-            label="📥 DESCARGAR REPORTE UNIFICADO", 
-            data=st.session_state['excel_consolidado'], 
-            file_name=f"TTR_Consolidado_{mes}_{anio}.xlsx", 
-            use_container_width=True, 
-            type="primary"
-        )
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            st.download_button(
+                label="📥 1. DESCARGAR REPORTE UNIFICADO (Completo)", 
+                data=st.session_state['excel_consolidado'], 
+                file_name=f"TTR_Consolidado_{mes}_{anio}.xlsx", 
+                use_container_width=True, 
+                type="secondary"
+            )
+            
+        with col_btn2:
+            st.download_button(
+                label="📊 2. DESCARGAR BASE POWER BI (Resumida)", 
+                data=st.session_state['excel_powerbi'], 
+                file_name=f"PowerBI_Usos_{mes}_{anio}.xlsx", 
+                use_container_width=True, 
+                type="primary"
+            )
