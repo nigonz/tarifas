@@ -793,7 +793,7 @@ with tab1:
 
     # LÓGICA DE PROCESAMIENTO MÚLTIPLE
     # LÓGICA DE PROCESAMIENTO MÚLTIPLE
-   if btn_procesar_todo:
+    if btn_procesar_todo:
         if not (f_base and f_nom_ts and f_nom_gt and f_ttr and f_dic):
             st.error("⚠️ Cargá los 5 archivos primero.")
         else:
