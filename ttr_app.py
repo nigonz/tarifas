@@ -62,7 +62,7 @@ with col_menu:
     
     # Selector de hoja de referencia
     hoja_ref = st.text_input("Hoja de Referencia (Anterior)", value="JN07")
-3. Integración en el Botón de Procesado
+#3. Integración en el Botón de Procesado
 #Dentro del if btn_procesar_todo:, antes de llamar a las funciones de TTR, generamos el diccionario dinámico:
 
 Python
