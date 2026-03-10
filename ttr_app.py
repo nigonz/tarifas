@@ -74,4 +74,4 @@ if btn_procesar_todo:
     df_diccionario_hoy = generar_diccionario_actualizado(df_ref_excel, s1, s2, s3, s4, s5)
     
     # 3. Pasar este nuevo dataframe a tus funciones (en lugar de que ellas lean el Excel)
-    df_jn = tool_procesar_jn(f_base, f_nom_ts, f_nom_gt, f_ttr, df_diccionario_hoy, anio
+    df_jn = tool_procesar_jn(f_base, f_nom_ts, f_nom_gt, f_ttr, df_diccionario_hoy, anio)
