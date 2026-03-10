@@ -43,7 +43,7 @@ def generar_diccionario_actualizado(df_referencia, s1, s2, s3, s4, s5):
         
     return pd.DataFrame(nuevo_dic)
 #2. Modificación en la Interfaz (Tab 1)
-En la sección de col_menu, agregamos los campos para que cargues tus 5 tarifas del periodo actual:
+#En la sección de col_menu, agregamos los campos para que cargues tus 5 tarifas del periodo actual:
 
 Python
 with col_menu:
@@ -63,7 +63,7 @@ with col_menu:
     # Selector de hoja de referencia
     hoja_ref = st.text_input("Hoja de Referencia (Anterior)", value="JN07")
 3. Integración en el Botón de Procesado
-Dentro del if btn_procesar_todo:, antes de llamar a las funciones de TTR, generamos el diccionario dinámico:
+#Dentro del if btn_procesar_todo:, antes de llamar a las funciones de TTR, generamos el diccionario dinámico:
 
 Python
 if btn_procesar_todo:
