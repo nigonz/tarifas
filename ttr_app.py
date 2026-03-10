@@ -42,7 +42,7 @@ def generar_diccionario_actualizado(df_referencia, s1, s2, s3, s4, s5):
         nuevo_dic.append({'Id': id_t, 'Minimo': round(v_min, 2), 'Maximo': round(v_max, 2)})
         
     return pd.DataFrame(nuevo_dic)
-2. Modificación en la Interfaz (Tab 1)
+#2. Modificación en la Interfaz (Tab 1)
 En la sección de col_menu, agregamos los campos para que cargues tus 5 tarifas del periodo actual:
 
 Python
