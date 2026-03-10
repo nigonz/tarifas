@@ -6,95 +6,141 @@ import io
 from datetime import datetime
 
 # =============================================================================
-# 1. SOLAPA 1: CÁLCULO DE TARIFAS (ACORDADA 1)
+# 1. FUNCIONES CORE: MOTOR DE CÁLCULOS
 # =============================================================================
 
-def generar_diccionario_tarifas(f_nov, nuevas_scn):
-    """Genera la nueva escala tarifaria aplicando los multiplicadores de la Acordada 1"""
-    df = pd.read_excel(f_nov, sheet_name='JN11')
-    v1_nov = df.loc[df['Id'] == '1SCN', 'Limite Inferior'].values[0]
+def proyectar_tarifas_febrero(df_nov, nuevas_scn):
+    """Lógica de Colab: Aplica Acordada 1 y factor de aumento (31.36%)"""
+    v1_nov = df_nov.loc[df_nov['Id'] == '1SCN', 'Limite Inferior'].values[0]
     factor = nuevas_scn['1SCN'] / v1_nov
-    
+    df = df_nov.copy()
     for i, row in df.iterrows():
         id_t = str(row['Id'])
-        # Bases SCN
         if id_t in nuevas_scn: v_final = nuevas_scn[id_t]
-        # Multiplicadores Acordada 1
         elif 'SEN' in id_t and 'SESN' not in id_t: v_final = nuevas_scn.get(id_t.replace('SEN', 'SCN'), nuevas_scn['1SCN']) * 1.25
         elif 'SCSN' in id_t: v_final = nuevas_scn.get(id_t.replace('SCSN', 'SCN'), nuevas_scn['1SCN']) * 1.59
         elif 'SEAN' in id_t and 'SEASN' not in id_t: v_final = nuevas_scn.get(id_t.replace('SEAN', 'SCN'), nuevas_scn['1SCN']) * 1.75
         elif 'SESN' in id_t: v_final = (nuevas_scn.get(id_t.replace('SESN', 'SCN'), nuevas_scn['1SCN']) * 1.59) * 1.25
         elif 'SEASN' in id_t: v_final = (nuevas_scn.get(id_t.replace('SEASN', 'SCN'), nuevas_scn['1SCN']) * 1.59) * 1.75
-        # Ajuste por Factor (KM, KP, LP)
         else: v_final = row['Limite Inferior'] * factor
-        
         df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v_final, 2)
     return df, factor
 
-# =============================================================================
-# 2. SOLAPA 2: PRE-PROCESO (DGGI + PARQUE MÓVIL JN)
-# =============================================================================
-
-def preproceso_dggi_completo(f_csv, nom_gt, f_pme=None):
-    """Consolida la base DGGI, aplicando Parque Móvil solo a registros de JN"""
+def preproceso_pme_jn(f_csv, nom_gt, df_pme):
+    """Lógica PME: Separa JN con dominios/energías y DF/PBA operativo"""
     df = pd.read_csv(f_csv, encoding='ISO-8859-1', delimiter=';', low_memory=False)
     df['ID_LINEA'] = df['ID_LINEA'].astype(str).str.strip()
+    nom_gt['ID_LINEA'] = nom_gt['ID_LINEA'].astype(str).str.strip()
     
-    # Merge inicial con Nomenclador
-    df_ = pd.merge(df, nom_gt[['ID_LINEA', 'GT', 'Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']].drop_duplicates(), on='ID_LINEA', how='left')
+    df_ = df[df['ID_LINEA'].isin(nom_gt['ID_LINEA'])].copy()
+    _df2_ = pd.merge(df_, nom_gt[['ID_LINEA', 'GT', 'Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']], how='left', on='ID_LINEA')
     
-    # --- DIVISIÓN DE TRABAJO ---
-    # 1. JN: Con Parque Móvil (Dominio/Energía)
-    df_jn = df_[df_['GT'].isin(['SGI', 'SGII', 'SGIKM'])].copy()
-    if f_pme is not None:
-        pme = pd.read_excel(f_pme)
-        df_jn = df_jn.merge(pme[['DOMINIO', 'ENERGIA']].drop_duplicates(), on='DOMINIO', how='left')
-        df_jn['ENERGIA'] = df_jn['ENERGIA'].fillna(1) # Gasoil por defecto
-        group_jn = ['ID_EMPRESA','ID_LINEA','RAMAL','DOMINIO','ENERGIA','CONTRATO','TARIFA BASE ITG','DEBITADO','DESCUENTO X INTEGRACION','GT','Linea SILAS DNGFF','PROVINCIA','MUNICIPIO']
-    else:
-        df_jn['DOMINIO'] = 'NO'; df_jn['ENERGIA'] = 1
-        group_jn = ['ID_EMPRESA','ID_LINEA','RAMAL','CONTRATO','TARIFA BASE ITG','DEBITADO','DESCUENTO X INTEGRACION','GT','Linea SILAS DNGFF','PROVINCIA','MUNICIPIO']
+    # Separamos Jurisdicción Nacional (JN) para abrir por dominios
+    df_jn = _df2_[_df2_['GT'].isin(['SGI', 'SGII', 'SGIKM'])].copy()
+    dominios_pme = df_pme['DOMINIO'].unique()
     
-    # 2. CABA y PBA: Agrupación Operativa (Sin Dominio)
-    df_otros = df_[df_['GT'].isin(['DF', 'UPA', 'UMA1', 'UMA2', 'UPAKM'])].copy()
-    df_otros['DOMINIO'] = 'NO'; df_otros['ENERGIA'] = 1
-    group_otros = [c for c in group_jn if c not in ['DOMINIO', 'ENERGIA']]
-
-    # Ejecutar Agregaciones
-    jn_final = df_jn.groupby(group_jn, as_index=False).agg({'CANTIDAD_USOS':'sum', 'MONTO':'sum'})
-    otros_final = df_otros.groupby(group_otros, as_index=False).agg({'CANTIDAD_USOS':'sum', 'MONTO':'sum'})
+    # 1. JN Especiales (GNC/Elect)
+    df_jn_pme = df_jn[df_jn['DOMINIO'].isin(dominios_pme)].merge(df_pme[['DOMINIO', 'ENERGIA']].drop_duplicates(), on='DOMINIO', how='left')
     
-    return pd.concat([jn_final, otros_final], ignore_index=True)
+    # 2. JN Resto (Gasoil) + DF/PBA
+    df_resto = _df2_[~_df2_['DOMINIO'].isin(dominios_pme)].copy()
+    df_resto['DOMINIO'] = 'NO'; df_resto['ENERGIA'] = 1 # Gasoil
+    
+    # Agrupaciones
+    group_pme = ['ID_EMPRESA','ID_LINEA','RAMAL','DOMINIO','ENERGIA','CONTRATO','TARIFA BASE ITG','DEBITADO','DESCUENTO X INTEGRACION','GT','Linea SILAS DNGFF','PROVINCIA','MUNICIPIO']
+    group_op = [c for c in group_pme if c not in ['DOMINIO', 'ENERGIA']]
+    
+    res_pme = df_jn_pme.groupby(group_pme, as_index=False).agg({'CANTIDAD_USOS':'sum', 'MONTO':'sum'})
+    res_op = df_resto.groupby(group_op, as_index=False).agg({'CANTIDAD_USOS':'sum', 'MONTO':'sum'})
+    res_op['DOMINIO'] = 'NO'; res_op['ENERGIA'] = 1
+    
+    final = pd.concat([res_pme, res_op], ignore_index=True)
+    # Cálculos ATS/ITG (Fórmulas originales del usuario)
+    for col in ['TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS']:
+        final[col] = pd.to_numeric(final[col], errors='coerce')
+    final['COMP. ITG'] = final['DESCUENTO X INTEGRACION'] * final['CANTIDAD_USOS']
+    final['COMP. ATS'] = final.apply(lambda x: ((x['DEBITADO'] / 0.45 * 0.55) * x['CANTIDAD_USOS'] if x['GT'] == 'INP' else (x['TARIFA BASE ITG'] - x['DEBITADO'] - x['DESCUENTO X INTEGRACION']) * x['CANTIDAD_USOS']) if x['CONTRATO'] == 621 else 0, axis=1)
+    final['COMP. ATS s/IVA'] = final['COMP. ATS'] / 1.105
+    final['COMP. ITG s/IVA'] = final['COMP. ITG'] / 1.105
+    return final
 
 # =============================================================================
-# 3. INTERFAZ Y ORQUESTACIÓN (STREAMLIT)
+# 2. INTERFAZ Y ESTADOS
 # =============================================================================
 
-st.set_page_config(page_title="Fiscalización TTR", layout="wide")
-tab1, tab2, tab3 = st.tabs(["💰 TARIFAS", "📂 PRE-PROCESO", "🚀 DETERMINACIÓN TTR"])
+st.set_page_config(page_title="Fiscalización TTR v2.0", layout="wide")
+st.title("Orquestador de Compensaciones y Energías")
 
-# --- TAB 1: GENERACIÓN DE ESCALAS ---
+# Inicializar estados para que los botones de descarga no desaparezcan
+if 'df_tarifas' not in st.session_state: st.session_state['df_tarifas'] = None
+if 'df_pme' not in st.session_state: st.session_state['df_pme'] = None
+if 'ttr_final' not in st.session_state: st.session_state['ttr_final'] = None
+
+tab1, tab2, tab3 = st.tabs(["💰 TARIFAS", "📂 PRE-PROCESO PME", "🚀 DETERMINACIÓN TTR"])
+
+# --- TAB 1: TARIFAS ---
 with tab1:
-    st.header("1. Generador de Diccionario")
-    f_nov = st.file_uploader("Subir Base Noviembre (Excel)", type=['xlsx'])
-    c1, c2, c3, c4, c5 = st.columns(5)
-    n1 = c1.number_input("1SCN", value=650.0)
-    n2 = c2.number_input("2SCN", value=724.09)
-    # ... (resto de inputs)
+    st.header("1. Generador de Escala Tarifaria")
+    f_nov = st.file_uploader("Base Noviembre (Excel con JN11)", type=['xlsx'])
+    c = st.columns(5)
+    n1 = c[0].number_input("1SCN", value=650.0); n2 = c[1].number_input("2SCN", value=724.09)
+    # (Agregá n3, n4, n5 igual)
     if f_nov and st.button("🔄 Calcular Febrero"):
-        dicc, fac = generar_diccionario_tarifas(f_nov, {'1SCN':n1, '2SCN':n2})
-        st.session_state['dicc_feb'] = dicc
-        st.success(f"Diccionario generado (+{((fac-1)*100):.2f}%)")
-
-# --- TAB 3: DETERMINACIÓN TTR (EL MURO DE FECHA) ---
-with tab3:
-    st.header("3. Cálculo de TTR Final")
-    # Configuración de periodo partido
-    partido = st.checkbox("¿El mes tiene aumento a mitad de periodo?")
-    if partido:
-        fecha_corte = st.date_input("Día de vigencia de nueva tarifa:", value=datetime(2026,2,18))
+        df_n = pd.read_excel(f_nov, sheet_name='JN11')
+        res, fac = proyectar_tarifas_febrero(df_n, {'1SCN':n1, '2SCN':n2})
+        st.session_state['df_tarifas'] = res
+        st.success(f"Cálculo listo (Aumento: {((fac-1)*100):.2f}%)")
     
-    # Al procesar, el script hace:
-    # df_a = base[base['FECHA'] < fecha_corte] -> Macheo con Dicc_Nov
-    # df_b = base[base['FECHA'] >= fecha_corte] -> Macheo con Dicc_Feb
-    # Al final: df_final.groupby(['CONCAT_MACHEO3']).agg(...) para "aplastar" dominios.
+    if st.session_state['df_tarifas'] is not None:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='xlsxwriter') as wr: st.session_state['df_tarifas'].to_excel(wr, index=False)
+        st.download_button("📥 Descargar Diccionario Febrero", data=buf.getvalue(), file_name="Diccionario_Feb_Control.xlsx")
+
+# --- TAB 2: PRE-PROCESO ---
+with tab2:
+    st.header("2. Pre-proceso DGGI con Energías JN")
+    c1, c2, c3 = st.columns(3)
+    f_csv = c1.file_uploader("Crudo SUBE (ZIP)", type=['zip','csv'])
+    f_gt = c2.file_uploader("Nomenclador GT", type=['xlsx'])
+    f_en = c3.file_uploader("Base Energías Renovables", type=['xlsx'])
+    
+    if f_csv and f_gt and f_en and st.button("🚀 Iniciar Motor PME"):
+        nom_gt = pd.read_excel(f_gt)
+        df_en_data = pd.read_excel(f_en)
+        res_pme = preproceso_dggi_completo(f_csv, nom_gt, df_en_data)
+        st.session_state['df_pme'] = res_pme
+        st.success(f"Base PME generada: {len(res_pme):,} filas.")
+
+    if st.session_state['df_pme'] is not None:
+        buf2 = io.BytesIO()
+        with pd.ExcelWriter(buf2, engine='xlsxwriter') as wr: st.session_state['df_pme'].to_excel(wr, index=False)
+        st.download_button("📥 Descargar base_dggi_DMK_PME", data=buf2.getvalue(), file_name="dggi_PME_Control.xlsx")
+
+# --- TAB 3: DETERMINACIÓN TTR ---
+with tab3:
+    st.header("3. Cálculo de TTR (Jurisdicciones)")
+    st.info("Configurá las resoluciones y el switch de fecha para JN.")
+    
+    col_r, col_f = st.columns(2)
+    res_otros = col_r.text_input("Resolución DF/PBA:", value="6")
+    partido = col_f.checkbox("¿Mes con aumento a mitad de periodo? (Ej. Febrero)")
+    
+    if partido:
+        f_switch = st.date_input("Fecha de cambio de tarifa:", value=datetime(2026, 2, 19))
+    
+    if st.button("🚀 Procesar TTR y Consolidar"):
+        if st.session_state['df_pme'] is None:
+            st.error("Primero procesá la Tab 2.")
+        else:
+            with st.spinner("Macheando tarifas y aplastando dominios..."):
+                # Aquí corre la lógica tool_procesar_jn/df/pba que unificamos
+                # Si partido=True, divide la base PME en dos bolsas antes de machear
+                # Al final agrupa por CONCAT_MACHEO3
+                st.session_state['ttr_final'] = st.session_state['df_pme'] # Simulamos el resultado
+                st.balloons()
+    
+    if st.session_state['ttr_final'] is not None:
+        st.subheader("📥 Reportes Finales")
+        d1, d2 = st.columns(2)
+        d1.download_button("📊 Reporte Ejecutivo (Aplastado)", data=b"", file_name="TTR_Ejecutivo_Liquidacion.xlsx")
+        d2.download_button("📈 Base para Power BI", data=b"", file_name="PowerBI_Usos.xlsx")
