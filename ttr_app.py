@@ -45,7 +45,7 @@ def generar_diccionario_actualizado(df_referencia, s1, s2, s3, s4, s5):
 #2. Modificación en la Interfaz (Tab 1)
 #En la sección de col_menu, agregamos los campos para que cargues tus 5 tarifas del periodo actual:
 
-Python
+#Python
 with col_menu:
     st.subheader("Configuración")
     mes = st.selectbox("Mes", ["Enero", "Febrero", ...])
@@ -65,7 +65,7 @@ with col_menu:
 #3. Integración en el Botón de Procesado
 #Dentro del if btn_procesar_todo:, antes de llamar a las funciones de TTR, generamos el diccionario dinámico:
 
-Python
+#Python
 if btn_procesar_todo:
     # 1. Cargar la referencia del Excel de diccionarios
     df_ref_excel = pd.read_excel(f_dic, sheet_name=hoja_ref)
