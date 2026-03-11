@@ -28,7 +28,8 @@ def proyectar_tarifas_febrero(df_nov, nuevas_scn):
 
 def preproceso_pme_jn(f_csv, nom_gt, df_pme):
     """Lógica PME: Separa JN con dominios/energías y DF/PBA operativo"""
-    df = pd.read_csv(f_csv, encoding='ISO-8859-1', delimiter=';', low_memory=False)
+    # Con esto, Pandas detecta automáticamente si es , o ;
+    df = pd.read_csv(file_path1, encoding='ISO-8859-1', sep=None, engine='python')
     df['ID_LINEA'] = df['ID_LINEA'].astype(str).str.strip()
     nom_gt['ID_LINEA'] = nom_gt['ID_LINEA'].astype(str).str.strip()
     
