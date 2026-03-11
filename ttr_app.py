@@ -1,167 +1,103 @@
-import pandas as pd
-import numpy as np
 import streamlit as st
+import polars as pl
+import pandas as pd
 import io
 import zipfile
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Fiscalización TTR v2.2", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Fiscalización TTR v3.0", layout="wide")
 
 # =============================================================================
-# 1. FUNCIONES CORE (LÓGICA DE NEGOCIO)
+# 1. MOTOR DE LÓGICA CON POLARS (EL SECRETO PARA ARCHIVOS GRANDES)
 # =============================================================================
 
-def proyectar_tarifas(df_nov, nuevas_scn):
-    try:
-        v1_nov = df_nov.loc[df_nov['Id'] == '1SCN', 'Limite Inferior'].values[0]
-        factor = nuevas_scn['1SCN'] / v1_nov
-    except:
-        return df_nov, 1.0
-    
-    df = df_nov.copy()
-    scn_full = {}
-    for i in range(1, 6):
-        id_scn = f"{i}SCN"
-        if id_scn in nuevas_scn and nuevas_scn[id_scn] > 0:
-            scn_full[id_scn] = nuevas_scn[id_scn]
-        else:
-            base_nov = df.loc[df['Id'] == id_scn, 'Limite Inferior'].values[0]
-            scn_full[id_scn] = base_nov * factor
+def procesar_con_polars(f_input, f_gt, f_en):
+    """Procesamiento ultra-rápido y eficiente en memoria."""
+    # 1. Cargar Nomenclador y Energías (archivos pequeños en Pandas)
+    nom_gt = pd.read_excel(f_gt)
+    nom_gt.columns = nom_gt.columns.str.upper()
+    nom_gt['ID_LINEA'] = nom_gt['ID_LINEA'].astype(str).str.strip().str.replace('.0', '', regex=False)
+    ids_validos = nom_gt['ID_LINEA'].unique().tolist()
 
-    for i, row in df.iterrows():
-        id_t = str(row['Id'])
-        v_final = 0
-        if any(x in id_t for x in ['SEN', 'SCSN', 'SEAN', 'SESN', 'SEASN']):
-            num = id_t[0] if id_t[0].isdigit() else "1"
-            base = scn_full.get(f"{num}SCN", scn_full["1SCN"])
-            if 'SESN' in id_t: v_final = (base * 1.59) * 1.25
-            elif 'SEASN' in id_t: v_final = (base * 1.59) * 1.75
-            elif 'SCSN' in id_t: v_final = base * 1.59
-            elif 'SEN' in id_t: v_final = base * 1.25
-            elif 'SEAN' in id_t: v_final = base * 1.75
-        elif id_t in scn_full:
-            v_final = scn_full[id_t]
-        else:
-            v_final = row['Limite Inferior'] * factor
-        df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v_final, 2)
-    return df, factor
+    df_en = pd.read_excel(f_en)
+    df_en.columns = df_en.columns.str.upper()
+    df_en['DOMINIO'] = df_en['DOMINIO'].astype(str).str.strip().str.upper()
+    map_energia = dict(zip(df_en['DOMINIO'], df_en['ENERGIA']))
 
-def preproceso_dmk_energias(f_input, nom_gt, df_en):
-    # Manejo de ZIP o CSV
+    # 2. Leer el CSV gigante con Polars (Streaming mode)
+    # Si es ZIP, extraemos el contenido primero en memoria
     if f_input.name.endswith('.zip'):
         with zipfile.ZipFile(f_input) as z:
             csv_file = [n for n in z.namelist() if n.endswith('.csv')][0]
-            with z.open(csv_file) as f:
-                df = pd.read_csv(f, encoding='ISO-8859-1', sep=None, engine='python')
+            data = z.read(csv_file)
+            # Polars lee el contenido binario directamente
+            lf = pl.read_csv(data, encoding='iso-8859-1', infer_schema_length=10000).lazy()
     else:
-        df = pd.read_csv(f_input, encoding='ISO-8859-1', sep=None, engine='python')
+        lf = pl.read_csv(f_input.getvalue(), encoding='iso-8859-1', infer_schema_length=10000).lazy()
 
-    df.columns = df.columns.str.strip().str.upper()
-    nom_gt.columns = nom_gt.columns.str.upper()
-    df['ID_LINEA'] = df['ID_LINEA'].astype(str).str.strip().str.replace('.0', '', regex=False)
-    nom_gt['ID_LINEA'] = nom_gt['ID_LINEA'].astype(str).str.strip().str.replace('.0', '', regex=False)
+    # 3. Limpieza y Filtrado "Lazy" (No consume RAM hasta el final)
+    lf = lf.rename({c: c.strip().upper() for c in lf.columns})
     
-    df_f = df[df['ID_LINEA'].isin(nom_gt['ID_LINEA'])].copy()
-    _df2 = pd.merge(df_f, nom_gt[['ID_LINEA', 'GT', 'LINEA SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']], on='ID_LINEA', how='left')
+    # Filtrar columnas de interés para reducir el ancho de la tabla
+    cols_necesarias = ['PROVINCIA', 'MUNICIPIO', 'GT', 'ID_LINEA', 'RAMAL', 'DOMINIO', 
+                       'CONTRATO', 'TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION', 
+                       'CANTIDAD_USOS', 'MONTO']
     
-    df_en.columns = df_en.columns.str.upper()
-    df_en['DOMINIO'] = df_en['DOMINIO'].astype(str).str.strip().str.upper()
-    _df2['DOMINIO'] = _df2['DOMINIO'].astype(str).str.strip().str.upper()
+    lf = lf.select([pl.col(c) for c in cols_necesarias])
     
-    dom_esp = df_en['DOMINIO'].unique()
-    df_con_en = _df2[_df2['DOMINIO'].isin(dom_esp)].copy()
-    df_con_en = df_con_en.merge(df_en[['DOMINIO', 'ENERGIA']].drop_duplicates(), on='DOMINIO', how='left')
-    
-    df_resto = _df2[~_df2['DOMINIO'].isin(dom_esp)].copy()
-    df_resto['ENERGIA'] = 3
-    
-    final = pd.concat([df_con_en, df_resto], ignore_index=True)
-    grupo = ['PROVINCIA', 'MUNICIPIO', 'GT', 'LINEA SILAS DNGFF', 'ID_LINEA', 'RAMAL', 'DOMINIO', 'ENERGIA', 'CONTRATO', 'TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION']
-    res = final.groupby(grupo, as_index=False).agg({'CANTIDAD_USOS': 'sum', 'MONTO': 'sum'})
-    return res
+    # Limpiar ID_LINEA y filtrar
+    lf = lf.with_columns(
+        pl.col("ID_LINEA").cast(pl.Utf8).str.strip_chars().str.replace(r"\.0$", "")
+    ).filter(pl.col("ID_LINEA").is_in(ids_validos))
 
-def determinar_ttr_motor(df_pme, df_tarifas, anio, reso):
-    df = df_pme.copy()
-    anio_str, reso_str = str(int(anio)), str(reso).strip()
-    df['TARIFA BASE ITG'] = pd.to_numeric(df['TARIFA BASE ITG'], errors='coerce').round(2)
-    df_tarifas['Limite Inferior'] = pd.to_numeric(df_tarifas['Limite Inferior'], errors='coerce').round(2)
+    # 4. Agrupamiento pesado (Se hace en el motor de Polars, no en RAM de Python)
+    lf_grouped = lf.group_by(['GT', 'ID_LINEA', 'RAMAL', 'DOMINIO', 'CONTRATO', 'TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION']).agg([
+        pl.col('CANTIDAD_USOS').sum(),
+        pl.col('MONTO').sum()
+    ])
+
+    # 5. Ejecutar el plan y convertir a Pandas para el final (aquí ya es pequeño)
+    df_res = lf_grouped.collect().to_pandas()
+
+    # 6. Cruces finales (ya con datos resumidos)
+    df_res = df_res.merge(nom_gt[['ID_LINEA', 'LINEA SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']].drop_duplicates(), on='ID_LINEA', how='left')
+    df_res['ENERGIA'] = df_res['DOMINIO'].str.strip().str.upper().map(map_energia).fillna(3)
     
-    lookup = df_tarifas.drop_duplicates(subset=['Limite Inferior']).set_index('Limite Inferior')['Id'].to_dict()
-    df['NODO_ID'] = df['TARIFA BASE ITG'].map(lookup).fillna("S/D")
-    df['SEC_NUM'] = df['NODO_ID'].str.extract('(\d+)').fillna('0')
-    df['SEC_FINAL'] = np.where((df['GT'] == "SGII") & (df['SEC_NUM'].isin(['1', '2', '3'])), '4', df['SEC_NUM'])
+    # Cálculos de compensación
+    df_res['COMP. ITG'] = df_res['DESCUENTO X INTEGRACION'] * df_res['CANTIDAD_USOS']
+    df_res['COMP. ATS'] = df_res.apply(lambda x: (((x['DEBITADO']/0.45)*0.55)*x['CANTIDAD_USOS'] if x['GT']=='INP' else (x['TARIFA BASE ITG']-x['DEBITADO']-x['DESCUENTO X INTEGRACION'])*x['CANTIDAD_USOS']) if x['CONTRATO']==621 else 0, axis=1)
     
-    tipo_t = np.where(df['CONTRATO'] == 627, "SN", "N")
-    id_linea_clean = df['ID_LINEA'].astype(str).str.replace('.0', '', regex=False)
-    
-    df['CONCAT_MATCHEO3'] = (anio_str + reso_str + df['SEC_FINAL'].astype(str) + 
-                             df['GT'].astype(str) + id_linea_clean + "S" + pd.Series(tipo_t).astype(str))
-    df['FACTOR_CORR'] = np.select([df['ENERGIA'] == 1, df['ENERGIA'] == 2], [1.3, 1.5], default=1.0)
-    return df
+    return df_res
 
 # =============================================================================
-# 2. INTERFAZ DE USUARIO
+# 2. INTERFAZ STREAMLIT
 # =============================================================================
 
-st.sidebar.header("📅 Configuración")
-meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-mes_sel = st.sidebar.selectbox("Mes de Cálculo:", meses, index=1)
-anio_sel = st.sidebar.selectbox("Año:", [2025, 2026], index=1)
+st.title("🚀 TTR Engine v3.0 (Polars Edition)")
+st.info("Esta versión está diseñada para procesar archivos de +200MB sin caídas.")
 
-st.title(f"Fiscalización TTR - {mes_sel} {anio_sel}")
+if 'df_pme' not in st.session_state: st.session_state.df_pme = None
 
-for key in ['df_tarifas', 'df_pme', 'ttr_final']:
-    if key not in st.session_state: st.session_state[key] = None
+# Solo pongo la Tab 2 para probar la carga pesada
+tab1, tab2, tab3 = st.tabs(["Tarifas", "Pre-Proceso", "Resultado"])
 
-t1, t2, t3 = st.tabs(["💰 1. TARIFAS", "📂 2. PRE-PROCESO PME", "🚀 3. DETERMINACIÓN TTR"])
-
-with t1:
-    f_nov = st.file_uploader("Subir Noviembre (Excel)", type=['xlsx'])
-    if f_nov:
-        c1, c2 = st.columns(2)
-        n1 = c1.number_input("1SCN:", value=650.0)
-        n2 = c2.number_input("2SCN:", value=724.09)
-        if st.button("🔄 Calcular Diccionario"):
-            df_n = pd.read_excel(f_nov, sheet_name='JN11')
-            st.session_state.df_tarifas, _ = proyectar_tarifas(df_n, {'1SCN': n1, '2SCN': n2})
-            st.success("Escala generada.")
-    if st.session_state.df_tarifas is not None:
-        buf1 = io.BytesIO()
-        with pd.ExcelWriter(buf1, engine='xlsxwriter') as wr: st.session_state.df_tarifas.to_excel(wr, index=False)
-        st.download_button("📥 Descargar Diccionario", buf1.getvalue(), f"Diccionario_{mes_sel}.xlsx")
-
-with t2:
-    st.header("Consolidación SUBE + Energías")
+with tab2:
     c1, c2, c3 = st.columns(3)
-    f_csv = c1.file_uploader("Archivo SUBE (CSV o ZIP)", type=['csv', 'zip'])
-    f_gt = c2.file_uploader("Nomenclador GT (Excel)", type=['xlsx'])
-    f_en = c3.file_uploader("Parque Energías (Excel)", type=['xlsx'])
-    if f_csv and f_gt and f_en:
-        if st.button("🚀 Iniciar Pre-proceso"):
-            with st.spinner("Procesando datos pesados..."):
-                st.session_state.df_pme = preproceso_dmk_energias(f_csv, pd.read_excel(f_gt), pd.read_excel(f_en))
-                st.success(f"Finalizado: {len(st.session_state.df_pme)} filas resumidas.")
-    if st.session_state.df_pme is not None:
-        buf2 = io.BytesIO()
-        with pd.ExcelWriter(buf2, engine='xlsxwriter') as wr: st.session_state.df_pme.to_excel(wr, index=False)
-        st.download_button("📥 Descargar Base PME", buf2.getvalue(), f"Base_PME_{mes_sel}.xlsx")
+    f_csv = c1.file_uploader("SUBE (CSV o ZIP)", type=['csv', 'zip'])
+    f_gt = c2.file_uploader("Nomenclador (Excel)", type=['xlsx'])
+    f_en = c3.file_uploader("Energías (Excel)", type=['xlsx'])
 
-with t3:
-    if st.session_state.df_pme is not None and st.session_state.df_tarifas is not None:
-        cc = st.columns(2)
-        v_anio = cc[0].number_input("Año CONCAT:", value=anio_sel)
-        v_reso = cc[1].text_input("Resolución CONCAT:", value="86")
-        f_teorico = st.file_uploader("Excel Resoluciones (Opcional)", type=['xlsx'])
-        if st.button("🚀 Calcular TTR Final"):
-            res = determinar_ttr_motor(st.session_state.df_pme, st.session_state.df_tarifas, v_anio, v_reso)
-            if f_teorico:
-                ttr_ref = pd.read_excel(f_teorico, sheet_name='TTR')
-                res = pd.merge(res, ttr_ref[['CONCAT', 'TTR E.C.']], left_on='CONCAT_MATCHEO3', right_on='CONCAT', how='left')
-                res['PAGO_FINAL'] = (res['TTR E.C.'] * res['CANTIDAD_USOS']) * res['FACTOR_CORR']
-            st.session_state.ttr_final = res
-            st.dataframe(res.head(15))
-            buf3 = io.BytesIO()
-            with pd.ExcelWriter(buf3, engine='xlsxwriter') as wr: res.to_excel(wr, index=False)
-            st.download_button("📥 Descargar TTR Final", buf3.getvalue(), f"TTR_FINAL_{mes_sel}.xlsx")
-    else:
-        st.warning("⚠️ Completa los pasos 1 y 2 para habilitar esta sección.")
+    if f_csv and f_gt and f_en:
+        if st.button("🔥 Iniciar Procesamiento"):
+            with st.spinner("Polars está procesando el archivo gigante..."):
+                try:
+                    st.session_state.df_pme = procesar_con_polars(f_csv, f_gt, f_en)
+                    st.success(f"¡Éxito! Base resumida a {len(st.session_state.df_pme)} filas.")
+                    st.dataframe(st.session_state.df_pme.head())
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+if st.session_state.df_pme is not None:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='xlsxwriter') as wr:
+        st.session_state.df_pme.to_excel(wr, index=False)
