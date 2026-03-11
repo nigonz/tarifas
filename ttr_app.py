@@ -178,3 +178,84 @@ with tab2:
             file_name=f"dggi_DMK_PME_{mes_seleccionado}_{anio_seleccionado}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+def determinar_ttr_con_logica_negocio(df_pme, df_tarifas, anio, resolucion):
+    """
+    Aplica la ingeniería inversa del script original:
+    1. Clasifica por tipos de servicio.
+    2. Machea contra el diccionario oficial.
+    3. Aplica factores de energía (GNC 1.3, Elect 1.5).
+    """
+    final = df_pme.copy()
+    
+    # --- 1. NORMALIZACIÓN Y LLAVES ---
+    final['TARIFA BASE ITG'] = pd.to_numeric(final['TARIFA BASE ITG'], errors='coerce').round(2)
+    df_tarifas['Limite Inferior'] = pd.to_numeric(df_tarifas['Limite Inferior'], errors='coerce').round(2)
+    
+    # --- 2. INGENIERÍA INVERSA (MATCHEO) ---
+    # Creamos un buscador: por cada tarifa, qué NODO es.
+    dicc_map = df_tarifas.drop_duplicates(subset=['Limite Inferior']).set_index('Limite Inferior')['Id'].to_dict()
+    final['NODO_ID'] = final['TARIFA BASE ITG'].map(dicc_map).fillna("S/D")
+
+    # --- 3. LÓGICA DE SECCIONES (Aplastado SGII) ---
+    # Si es SGII y la sección es 1, 2 o 3, se liquida como 4 (Lógica original)
+    final['SECCION_LIQ'] = final['NODO_ID'].str.extract('(\d)').fillna('0')
+    final['FINAL_SECCION'] = np.where(
+        (final['GT'] == "SGII") & (final['SECCION_LIQ'].isin(['1', '2', '3'])), 
+        '4', final['SECCION_LIQ']
+    )
+
+    # --- 4. CONCAT_MATCHEO3 (La llave de PowerBI/Resoluciones) ---
+    # Año + Reso + Sección + GT + Linea + TipoTarifa
+    final['TIPO_TARIFA'] = np.where(final['CONTRATO'] == 627, "SN", "N")
+    final['CONCAT_MATCHEO3'] = (
+        str(anio) + str(resolucion) + 
+        final['FINAL_SECCION'].astype(str) + 
+        final['GT'].astype(str) + 
+        final['ID_LINEA'].astype(str) + 
+        final['TIPO_TARIFA']
+    )
+
+    # --- 5. FACTORES DE ENERGÍA (GNC/ELECT) ---
+    # 1: GNC (1.3), 2: Eléctrico (1.5), 3: Diesel (1.0)
+    condiciones_en = [final['ENERGIA'] == 1, final['ENERGIA'] == 2]
+    factores_en = [1.3, 1.5]
+    final['FACTOR_CORRECCION'] = np.select(condiciones_en, factores_en, default=1.0)
+    
+    # Calculamos la recaudación teórica (esto se completará al subir el archivo de Resoluciones)
+    # Por ahora dejamos la columna lista
+    final['RECAUDACION_BASE'] = final['MONTO'] * final['FACTOR_CORRECCION']
+    
+    return final
+
+# --- DENTRO DEL BLOQUE DE TAB 3 EN STREAMLIT ---
+with tab3:
+    st.header("3. Determinación TTR y Consolidación")
+    
+    if st.session_state['df_pme'] is None:
+        st.warning("⚠️ Primero procesá la Tab 2.")
+    else:
+        c1, c2 = st.columns(2)
+        anio = c1.number_input("Año de Liquidación:", value=2026)
+        reso = c2.text_input("Número de Resolución:", value="86")
+        
+        # Subida opcional del archivo de TTR Teórico (el file_path6 de tu script)
+        f_ttr_reso = st.file_uploader("Subir TTR TEORICA RESOLUCIONES (Excel)", type=['xlsx'])
+
+        if st.button("🚀 Ejecutar Ingeniería Inversa y TTR"):
+            with st.spinner("Calculando CONCAT_MATCHEO3 y Factores de Energía..."):
+                res_ttr = determinar_ttr_con_logica_negocio(
+                    st.session_state['df_pme'], 
+                    st.session_state['df_tarifas'],
+                    anio, reso
+                )
+                
+                # Si subió el archivo de resoluciones, hacemos el merge final
+                if f_ttr_reso:
+                    ttr_data = pd.read_excel(f_ttr_reso, sheet_name='TTR')
+                    res_ttr = pd.merge(res_ttr, ttr_data[['CONCAT', 'TTR E.C.']], 
+                                       left_on='CONCAT_MATCHEO3', right_on='CONCAT', how='left')
+                    res_ttr['PAGO_FINAL'] = res_ttr['TTR E.C.'] * res_ttr['CANTIDAD_USOS'] * res_ttr['FACTOR_CORRECCION']
+                
+                st.session_state['ttr_final'] = res_ttr
+                st.success("TTR Determinado con éxito.")
+                st.dataframe(res_ttr[['CONCAT_MATCHEO3', 'CANTIDAD_USOS', 'FACTOR_CORRECCION', 'NODO_ID']].head(10))
