@@ -228,34 +228,104 @@ def determinar_ttr_con_logica_negocio(df_pme, df_tarifas, anio, resolucion):
     return final
 
 # --- DENTRO DEL BLOQUE DE TAB 3 EN STREAMLIT ---
-with tab3:
-    st.header("3. Determinación TTR y Consolidación")
+def motor_ttr_final(df_pme, df_tarifas, anio, resolucion):
+    """
+    Motor de Ingeniería Inversa y Liquidación TTR.
+    """
+    df = df_pme.copy()
     
-    if st.session_state['df_pme'] is None:
-        st.warning("⚠️ Primero procesá la Tab 2.")
-    else:
-        c1, c2 = st.columns(2)
-        anio = c1.number_input("Año de Liquidación:", value=2026)
-        reso = c2.text_input("Número de Resolución:", value="86")
-        
-        # Subida opcional del archivo de TTR Teórico (el file_path6 de tu script)
-        f_ttr_reso = st.file_uploader("Subir TTR TEORICA RESOLUCIONES (Excel)", type=['xlsx'])
+    # 1. Preparar llaves de cruce (Redondeo para evitar fallos de decimales)
+    df['TARIFA BASE ITG'] = pd.to_numeric(df['TARIFA BASE ITG'], errors='coerce').round(2)
+    df_tarifas['Limite Inferior'] = pd.to_numeric(df_tarifas['Limite Inferior'], errors='coerce').round(2)
+    
+    # 2. INGENIERÍA INVERSA: Macheo Dinámico
+    # En lugar de diccionarios hardcodeados, usamos el que generamos en la Tab 1
+    lookup = df_tarifas.drop_duplicates(subset=['Limite Inferior']).set_index('Limite Inferior')['Id'].to_dict()
+    df['NODO_ID'] = df['TARIFA BASE ITG'].map(lookup).fillna("S/D")
 
-        if st.button("🚀 Ejecutar Ingeniería Inversa y TTR"):
-            with st.spinner("Calculando CONCAT_MATCHEO3 y Factores de Energía..."):
-                res_ttr = determinar_ttr_con_logica_negocio(
+    # 3. LÓGICA DE SECCIONES (Aplastado SGII y Pases)
+    # Extraemos el número de la sección (ej: '3' de '3SEN')
+    df['SEC_NUM'] = df['NODO_ID'].str.extract('(\d+)').fillna('0').astype(int)
+    
+    # Regla de negocio: SGII se liquida como sección 4 si es 1, 2 o 3
+    df['SEC_FINAL'] = np.where(
+        (df['GT'] == "SGII") & (df['SEC_NUM'].isin([1, 2, 3])), 
+        4, 
+        df['SEC_NUM']
+    )
+
+    # 4. IDENTIFICACIÓN DE TARIFA (N o SN)
+    # Según tu código: Contrato 627 es Sin Nominalizar (SN), el resto es N
+    df['TIPO_TARIFA'] = np.where(df['CONTRATO'] == 627, "SN", "N")
+
+    # 5. GENERACIÓN DE CONCAT_MATCHEO3
+    # Año + Reso + Sección + GT + ID_LINEA + N/SN
+    # Nota: compilado_ts lo simplificamos al NODO_ID que ya trae la info
+    df['CONCAT_MATCHEO3'] = (
+        str(anio) + str(resolucion) + 
+        df['SEC_FINAL'].astype(str) + 
+        df['GT'].astype(str) + 
+        df['ID_LINEA'].astype(str) + 
+        "S" + # compilado_tt original
+        df['TIPO_TARIFA']
+    )
+
+    # 6. AGRUPAMIENTO FINAL (Reporte Ejecutivo)
+    # Aquí sumamos todo por la llave maestra
+    resumen = df.groupby([
+        'CONCAT_MATCHEO3', 'PROVINCIA', 'MUNICIPIO', 'GT', 
+        'ID_LINEA', 'Linea SILAS DNGFF', 'ENERGIA', 'NODO_ID'
+    ], as_index=False).agg({
+        'CANTIDAD_USOS': 'sum',
+        'MONTO': 'sum',
+        'COMP. ATS': 'sum',
+        'COMP. ITG': 'sum'
+    })
+
+    return resumen
+
+# --- BLOQUE DE INTERFAZ (Pegar en la Tab 3 de tu Streamlit) ---
+with tab3:
+    st.header("3. Motor de Determinación TTR")
+    
+    if st.session_state['df_pme'] is None or st.session_state['df_tarifas'] is None:
+        st.warning("⚠️ Debes completar las pestañas de Tarifas y Pre-proceso primero.")
+    else:
+        st.info("Configuración de Liquidación")
+        c1, c2 = st.columns(2)
+        anio_liq = c1.number_input("Año:", value=2026)
+        reso_nro = c2.text_input("N° Resolución:", value="86")
+        
+        # Archivo opcional de TTR Teórico para el cálculo de dinero
+        f_teorico = st.file_uploader("Subir TTR TEÓRICA RESOLUCIONES (Opcional)", type=['xlsx'])
+
+        if st.button("🚀 Ejecutar Liquidación TTR"):
+            with st.spinner("Procesando Ingeniería Inversa..."):
+                # Ejecutamos el motor
+                resultado = motor_ttr_final(
                     st.session_state['df_pme'], 
                     st.session_state['df_tarifas'],
-                    anio, reso
+                    anio_liq, reso_nro
                 )
                 
-                # Si subió el archivo de resoluciones, hacemos el merge final
-                if f_ttr_reso:
-                    ttr_data = pd.read_excel(f_ttr_reso, sheet_name='TTR')
-                    res_ttr = pd.merge(res_ttr, ttr_data[['CONCAT', 'TTR E.C.']], 
-                                       left_on='CONCAT_MATCHEO3', right_on='CONCAT', how='left')
-                    res_ttr['PAGO_FINAL'] = res_ttr['TTR E.C.'] * res_ttr['CANTIDAD_USOS'] * res_ttr['FACTOR_CORRECCION']
+                # Si subió el teórico, hacemos la cuenta final de dinero con factores de energía
+                if f_teorico:
+                    ttr_ref = pd.read_excel(f_teorico, sheet_name='TTR')
+                    resultado = pd.merge(resultado, ttr_ref[['CONCAT', 'TTR E.C.']], 
+                                        left_on='CONCAT_MATCHEO3', right_on='CONCAT', how='left')
+                    
+                    # Aplicación de Factores de Energía (GNC 1.3, ELEC 1.5, GASOIL 1.0)
+                    conds = [resultado['ENERGIA'] == 1, resultado['ENERGIA'] == 2]
+                    facts = [1.3, 1.5]
+                    resultado['FACTOR_EN'] = np.select(conds, facts, default=1.0)
+                    
+                    resultado['RECAUDACION_TTR'] = (resultado['TTR E.C.'] * resultado['CANTIDAD_USOS']) * resultado['FACTOR_EN']
                 
-                st.session_state['ttr_final'] = res_ttr
-                st.success("TTR Determinado con éxito.")
-                st.dataframe(res_ttr[['CONCAT_MATCHEO3', 'CANTIDAD_USOS', 'FACTOR_CORRECCION', 'NODO_ID']].head(10))
+                st.session_state['ttr_final'] = resultado
+                st.success("¡Liquidación procesada con éxito!")
+                st.dataframe(resultado.head(10))
+
+    if st.session_state.get('ttr_final') is not None:
+        buf_ttr = io.BytesIO()
+        st.session_state['ttr_final'].to_excel(buf_ttr, index=False)
+        st.download_button("📥 Descargar Reporte TTR Final", buf_ttr.getvalue(), f"TTR_Final_{mes_seleccionado}.xlsx")
