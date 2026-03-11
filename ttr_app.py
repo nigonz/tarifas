@@ -69,7 +69,7 @@ def preproceso_pme_jn(f_csv, nom_gt, df_pme):
 # =============================================================================
 
 st.set_page_config(page_title="Fiscalización TTR v2.0", layout="wide")
-st.title("Orquestador de Compensaciones y Energías")
+st.title("Compensaciones")
 
 # Inicializar estados para que los botones de descarga no desaparezcan
 if 'df_tarifas' not in st.session_state: st.session_state['df_tarifas'] = None
