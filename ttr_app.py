@@ -8,12 +8,10 @@ import io
 # =============================================================================
 
 def proyectar_tarifas(df_nov, nuevas_scn):
-    """Lógica 'Excel-Mirror': Multiplicadores encadenados y factor dual."""
     try:
-        # 1. Calculamos los dos factores de aumento desde 1SCN
+        # 1. Factores de aumento (Inf y Sup)
         v1_inf_nov = df_nov.loc[df_nov['Id'] == '1SCN', 'Limite Inferior'].values[0]
         v1_sup_nov = df_nov.loc[df_nov['Id'] == '1SCN', 'Limite Superior'].values[0]
-        
         f_inf = nuevas_scn['1SCN'] / v1_inf_nov
         f_sup = nuevas_scn['1SCN'] / v1_sup_nov
     except:
@@ -21,57 +19,47 @@ def proyectar_tarifas(df_nov, nuevas_scn):
 
     df = df_nov.copy()
     
-    # 2. Paso 1: Asegurar que tenemos los 5 SCN base en el diccionario
-    # Si el usuario no ingresó 3, 4 o 5, los proyectamos nosotros
+    # 2. Completamos los 5 SCN base (del 1 al 5)
+    scn_full = {}
     for i in range(1, 6):
         id_scn = f"{i}SCN"
-        if id_scn not in nuevas_scn:
+        if id_scn in nuevas_scn:
+            scn_full[id_scn] = nuevas_scn[id_scn]
+        else:
             base_nov = df.loc[df['Id'] == id_scn, 'Limite Inferior'].values[0]
-            nuevas_scn[id_scn] = base_nov * f_inf
+            scn_full[id_scn] = base_nov * f_inf
 
-    # 3. Paso 2: Calcular toda la grilla usando las fórmulas de tu Excel
+    # 3. Aplicamos fórmulas según el tipo de nodo
     for i, row in df.iterrows():
         id_t = str(row['Id'])
-        v_final = 0
         
-        # --- LÓGICA DE NODOS KM / KP ---
+        # NODOS KM / KP: Proyectamos Inf y Sup por separado (mantiene la escalera)
         if 'KM' in id_t or 'KP' in id_t:
-            # Estos nodos en tu Excel usan el Limite Superior de Noviembre * Factor Superior
-            v_final = row['Limite Superior'] * f_sup
+            df.at[i, 'Limite Inferior'] = round(row['Limite Inferior'] * f_inf, 2)
+            df.at[i, 'Limite Superior'] = round(row['Limite Superior'] * f_sup, 2)
             
-        # --- LÓGICA DE NODOS SCN (Base) ---
-        elif id_t in nuevas_scn:
-            v_final = nuevas_scn[id_t]
+        # NODOS ESPECIALES: Usan su SCN correspondiente (1 al 5)
+        elif any(x in id_t for x in ['SEN', 'SCSN', 'SEAN', 'SESN', 'SEASN']):
+            num = id_t[0] if id_t[0].isdigit() else "1"
+            base = scn_full.get(f"{num}SCN", scn_full["1SCN"])
             
-        # --- LÓGICA DE NODOS ESPECIALES (Encadenados) ---
-        elif 'SESN' in id_t: # Escolar Social (SCSN * 1.25)
-            # Buscamos el SCSN (que a su vez es SCN * 1.59)
-            base_scn = nuevas_scn.get(id_t.replace('SESN', 'SCN'), nuevas_scn['1SCN'])
-            v_final = (base_scn * 1.59) * 1.25
+            if 'SESN' in id_t:    v = (base * 1.59) * 1.25
+            elif 'SEASN' in id_t: v = (base * 1.59) * 1.75
+            elif 'SCSN' in id_t:  v = base * 1.59
+            elif 'SEN' in id_t:   v = base * 1.25
+            elif 'SEAN' in id_t:  v = base * 1.75
+            df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v, 2)
             
-        elif 'SEASN' in id_t: # Escolar Primario Social (SCSN * 1.75)
-            base_scn = nuevas_scn.get(id_t.replace('SEASN', 'SCN'), nuevas_scn['1SCN'])
-            v_final = (base_scn * 1.59) * 1.75
+        # NODOS SCN
+        elif id_t in scn_full:
+            v = scn_full[id_t]
+            df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v, 2)
             
-        elif 'SCSN' in id_t: # Social (SCN * 1.59)
-            base_scn = nuevas_scn.get(id_t.replace('SCSN', 'SCN'), nuevas_scn['1SCN'])
-            v_final = base_scn * 1.59
-            
-        elif 'SEN' in id_t: # Escolar (SCN * 1.25)
-            base_scn = nuevas_scn.get(id_t.replace('SEN', 'SCN'), nuevas_scn['1SCN'])
-            v_final = base_scn * 1.25
-            
-        elif 'SEAN' in id_t: # Escolar Primario (SCN * 1.75)
-            base_scn = nuevas_scn.get(id_t.replace('SEAN', 'SCN'), nuevas_scn['1SCN'])
-            v_final = base_scn * 1.75
-            
-        # --- RESTO DE NODOS ---
+        # RESTO
         else:
-            v_final = row['Limite Inferior'] * f_inf
+            df.at[i, 'Limite Inferior'] = round(row['Limite Inferior'] * f_inf, 2)
+            df.at[i, 'Limite Superior'] = round(row['Limite Superior'] * f_inf, 2)
             
-        # Aplicamos el valor a ambas columnas y redondeamos a 2 decimales
-        df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v_final, 2)
-        
     return df, f_inf
 def preproceso_dmk_energias(f_csv, nom_gt, df_pme):
     """Procesamiento de SUBE + Energías Renovables."""
