@@ -8,9 +8,9 @@ import io
 # =============================================================================
 
 def proyectar_tarifas(df_nov, nuevas_scn):
-    """Lógica corregida: Factor dual (Inf/Sup) y resolución de dependencias."""
+    """Lógica 'Excel-Mirror': Multiplicadores encadenados y factor dual."""
     try:
-        # 1. Determinamos los dos factores de aumento desde 1SCN
+        # 1. Calculamos los dos factores de aumento desde 1SCN
         v1_inf_nov = df_nov.loc[df_nov['Id'] == '1SCN', 'Limite Inferior'].values[0]
         v1_sup_nov = df_nov.loc[df_nov['Id'] == '1SCN', 'Limite Superior'].values[0]
         
@@ -21,50 +21,58 @@ def proyectar_tarifas(df_nov, nuevas_scn):
 
     df = df_nov.copy()
     
-    # 2. PRIMERA PASADA: Calculamos y aseguramos todos los SCN (1 al 5)
-    # Esto es vital para que SEN, SCSN, etc. tengan de dónde colgarse.
+    # 2. Paso 1: Asegurar que tenemos los 5 SCN base en el diccionario
+    # Si el usuario no ingresó 3, 4 o 5, los proyectamos nosotros
     for i in range(1, 6):
         id_scn = f"{i}SCN"
         if id_scn not in nuevas_scn:
-            # Si el usuario no lo ingresó, lo proyectamos con el factor inferior
             base_nov = df.loc[df['Id'] == id_scn, 'Limite Inferior'].values[0]
             nuevas_scn[id_scn] = base_nov * f_inf
 
-    # 3. SEGUNDA PASADA: Calculamos el resto de los nodos
+    # 3. Paso 2: Calcular toda la grilla usando las fórmulas de tu Excel
     for i, row in df.iterrows():
         id_t = str(row['Id'])
         v_final = 0
         
-        # Caso A: Nodos Base SCN (ya los tenemos en el diccionario)
-        if id_t in nuevas_scn:
-            v_final = nuevas_scn[id_t]
-            
-        # Caso B: Nodos KM o KP (usan factor Superior)
-        elif 'KM' in id_t or 'KP' in id_t:
+        # --- LÓGICA DE NODOS KM / KP ---
+        if 'KM' in id_t or 'KP' in id_t:
+            # Estos nodos en tu Excel usan el Limite Superior de Noviembre * Factor Superior
             v_final = row['Limite Superior'] * f_sup
             
-        # Caso C: Nodos Especiales (SEN, SEAN, SCSN, SESN, SEASN)
-        # Usamos .get() buscando el nodo SCN correspondiente en el diccionario actualizado
-        elif 'SEN' in id_t and 'SESN' not in id_t:
-            v_final = nuevas_scn.get(id_t.replace('SEN', 'SCN'), nuevas_scn['1SCN']) * 1.25
-        elif 'SCSN' in id_t:
-            v_final = nuevas_scn.get(id_t.replace('SCSN', 'SCN'), nuevas_scn['1SCN']) * 1.59
-        elif 'SEAN' in id_t and 'SEASN' not in id_t:
-            v_final = nuevas_scn.get(id_t.replace('SEAN', 'SCN'), nuevas_scn['1SCN']) * 1.75
-        elif 'SESN' in id_t:
-            v_final = nuevas_scn.get(id_t.replace('SESN', 'SCN'), nuevas_scn['1SCN']) * 1.59 * 1.25
-        elif 'SEASN' in id_t:
-            v_final = nuevas_scn.get(id_t.replace('SEASN', 'SCN'), nuevas_scn['1SCN']) * 1.59 * 1.75
+        # --- LÓGICA DE NODOS SCN (Base) ---
+        elif id_t in nuevas_scn:
+            v_final = nuevas_scn[id_t]
             
-        # Caso D: Otros nodos (Factor inferior estándar)
+        # --- LÓGICA DE NODOS ESPECIALES (Encadenados) ---
+        elif 'SESN' in id_t: # Escolar Social (SCSN * 1.25)
+            # Buscamos el SCSN (que a su vez es SCN * 1.59)
+            base_scn = nuevas_scn.get(id_t.replace('SESN', 'SCN'), nuevas_scn['1SCN'])
+            v_final = (base_scn * 1.59) * 1.25
+            
+        elif 'SEASN' in id_t: # Escolar Primario Social (SCSN * 1.75)
+            base_scn = nuevas_scn.get(id_t.replace('SEASN', 'SCN'), nuevas_scn['1SCN'])
+            v_final = (base_scn * 1.59) * 1.75
+            
+        elif 'SCSN' in id_t: # Social (SCN * 1.59)
+            base_scn = nuevas_scn.get(id_t.replace('SCSN', 'SCN'), nuevas_scn['1SCN'])
+            v_final = base_scn * 1.59
+            
+        elif 'SEN' in id_t: # Escolar (SCN * 1.25)
+            base_scn = nuevas_scn.get(id_t.replace('SEN', 'SCN'), nuevas_scn['1SCN'])
+            v_final = base_scn * 1.25
+            
+        elif 'SEAN' in id_t: # Escolar Primario (SCN * 1.75)
+            base_scn = nuevas_scn.get(id_t.replace('SEAN', 'SCN'), nuevas_scn['1SCN'])
+            v_final = base_scn * 1.75
+            
+        # --- RESTO DE NODOS ---
         else:
             v_final = row['Limite Inferior'] * f_inf
             
-        # Guardamos el resultado redondeado en ambas columnas
+        # Aplicamos el valor a ambas columnas y redondeamos a 2 decimales
         df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v_final, 2)
         
     return df, f_inf
-
 def preproceso_dmk_energias(f_csv, nom_gt, df_pme):
     """Procesamiento de SUBE + Energías Renovables."""
     df = pd.read_csv(f_csv, encoding='ISO-8859-1', sep=None, engine='python')
