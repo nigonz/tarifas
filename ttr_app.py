@@ -8,59 +8,57 @@ import io
 # =============================================================================
 
 def proyectar_tarifas(df_nov, nuevas_scn):
+    """Lógica Simplificada: Inf y Sup idénticos. Resuelve dependencias de nodos 1-5."""
     try:
-        # 1. Factores de aumento (Inf y Sup)
-        v1_inf_nov = df_nov.loc[df_nov['Id'] == '1SCN', 'Limite Inferior'].values[0]
-        v1_sup_nov = df_nov.loc[df_nov['Id'] == '1SCN', 'Limite Superior'].values[0]
-        f_inf = nuevas_scn['1SCN'] / v1_inf_nov
-        f_sup = nuevas_scn['1SCN'] / v1_sup_nov
+        # 1. Usamos un único factor basado en el aumento del Limite Inferior de 1SCN
+        v1_nov = df_nov.loc[df_nov['Id'] == '1SCN', 'Limite Inferior'].values[0]
+        factor = nuevas_scn['1SCN'] / v1_nov
     except:
         return df_nov, 1.0
 
     df = df_nov.copy()
     
-    # 2. Completamos los 5 SCN base (del 1 al 5)
+    # 2. Aseguramos que los 5 SCN base (del 1 al 5) estén calculados
+    # Esto garantiza que SEN, SCSN, etc. no se 'cuelguen' todos del 1SCN
     scn_full = {}
     for i in range(1, 6):
         id_scn = f"{i}SCN"
-        if id_scn in nuevas_scn:
+        if id_scn in nuevas_scn and nuevas_scn[id_scn] > 0:
             scn_full[id_scn] = nuevas_scn[id_scn]
         else:
             base_nov = df.loc[df['Id'] == id_scn, 'Limite Inferior'].values[0]
-            scn_full[id_scn] = base_nov * f_inf
+            scn_full[id_scn] = base_nov * factor
 
-    # 3. Aplicamos fórmulas según el tipo de nodo
+    # 3. Procesamos toda la grilla igualando ambas columnas al mismo valor
     for i, row in df.iterrows():
         id_t = str(row['Id'])
+        v_final = 0
         
-        # NODOS KM / KP: Proyectamos Inf y Sup por separado (mantiene la escalera)
-        if 'KM' in id_t or 'KP' in id_t:
-            df.at[i, 'Limite Inferior'] = round(row['Limite Inferior'] * f_inf, 2)
-            df.at[i, 'Limite Superior'] = round(row['Limite Superior'] * f_sup, 2)
+        # --- CASO A: NODOS ESPECIALES (Mantenemos multiplicadores del Excel) ---
+        if any(x in id_t for x in ['SEN', 'SCSN', 'SEAN', 'SESN', 'SEASN']):
+            # Buscamos el número de nodo (3SEN -> 3, 4SCSN -> 4, etc.)
+            num_nodo = id_t[0] if id_t[0].isdigit() else "1"
+            base_base = scn_full.get(f"{num_nodo}SCN", scn_full["1SCN"])
             
-        # NODOS ESPECIALES: Usan su SCN correspondiente (1 al 5)
-        elif any(x in id_t for x in ['SEN', 'SCSN', 'SEAN', 'SESN', 'SEASN']):
-            num = id_t[0] if id_t[0].isdigit() else "1"
-            base = scn_full.get(f"{num}SCN", scn_full["1SCN"])
+            if 'SESN' in id_t:    v_final = (base_base * 1.59) * 1.25
+            elif 'SEASN' in id_t: v_final = (base_base * 1.59) * 1.75
+            elif 'SCSN' in id_t:  v_final = base_base * 1.59
+            elif 'SEN' in id_t:   v_final = base_base * 1.25
+            elif 'SEAN' in id_t:  v_final = base_base * 1.75
             
-            if 'SESN' in id_t:    v = (base * 1.59) * 1.25
-            elif 'SEASN' in id_t: v = (base * 1.59) * 1.75
-            elif 'SCSN' in id_t:  v = base * 1.59
-            elif 'SEN' in id_t:   v = base * 1.25
-            elif 'SEAN' in id_t:  v = base * 1.75
-            df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v, 2)
-            
-        # NODOS SCN
+        # --- CASO B: NODOS SCN (Ya calculados en el paso 2) ---
         elif id_t in scn_full:
-            v = scn_full[id_t]
-            df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v, 2)
+            v_final = scn_full[id_t]
             
-        # RESTO
+        # --- CASO C: RESTO DE NODOS (Incluye KM, KP y otros) ---
         else:
-            df.at[i, 'Limite Inferior'] = round(row['Limite Inferior'] * f_inf, 2)
-            df.at[i, 'Limite Superior'] = round(row['Limite Superior'] * f_inf, 2)
+            # Usamos el Limite Inferior como base universal de proyección
+            v_final = row['Limite Inferior'] * factor
             
-    return df, f_inf
+        # RESULTADO FINAL: Forzamos a que ambas columnas sean iguales y redondeadas
+        df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v_final, 2)
+        
+    return df, factor
 def preproceso_dmk_energias(f_csv, nom_gt, df_pme):
     """Procesamiento de SUBE + Energías Renovables."""
     df = pd.read_csv(f_csv, encoding='ISO-8859-1', sep=None, engine='python')
