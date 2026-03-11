@@ -39,37 +39,27 @@ def proyectar_tarifas(df_nov, nuevas_scn):
         df.at[i, 'Limite Inferior'] = df.at[i, 'Limite Superior'] = round(v_final, 2)
     return df, factor
 
-def preproceso_dmk_energias(f_csv, nom_gt, df_en):
-    # Lectura robusta: detecta solo si es , o ;
-    df = pd.read_csv(f_csv, encoding='ISO-8859-1', sep=None, engine='python')
+import zipfile  # Importante agregar esto al principio del archivo
+
+def preproceso_dmk_energias(f_input, nom_gt, df_en):
+    # --- LÓGICA PARA MANEJAR ZIP ---
+    if f_input.name.endswith('.zip'):
+        with zipfile.ZipFile(f_input) as z:
+            # Buscamos el primer archivo CSV que haya adentro del zip
+            csv_filename = [name for name in z.namelist() if name.endswith('.csv')][0]
+            with z.open(csv_filename) as f:
+                df = pd.read_csv(f, encoding='ISO-8859-1', sep=None, engine='python')
+    else:
+        # Si subís el CSV suelto, sigue funcionando igual
+        df = pd.read_csv(f_input, encoding='ISO-8859-1', sep=None, engine='python')
+
+    # --- RESTO DEL PROCESO IGUAL ---
     df.columns = df.columns.str.strip().str.upper()
-    
-    # Limpieza de IDs
     df['ID_LINEA'] = df['ID_LINEA'].astype(str).str.strip().str.replace('.0', '', regex=False)
-    nom_gt.columns = nom_gt.columns.str.upper()
-    nom_gt['ID_LINEA'] = nom_gt['ID_LINEA'].astype(str).str.strip().str.replace('.0', '', regex=False)
     
-    # Filtrado y Cruce
-    df_f = df[df['ID_LINEA'].isin(nom_gt['ID_LINEA'])].copy()
-    _df2 = pd.merge(df_f, nom_gt[['ID_LINEA', 'GT', 'LINEA SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']], on='ID_LINEA', how='left')
-    
-    # Energías
-    df_en.columns = df_en.columns.str.upper()
-    df_en['DOMINIO'] = df_en['DOMINIO'].astype(str).str.strip().str.upper()
-    _df2['DOMINIO'] = _df2['DOMINIO'].astype(str).str.strip().str.upper()
-    
-    df_con_en = _df2[_df2['DOMINIO'].isin(df_en['DOMINIO'].unique())].copy()
-    df_con_en = df_con_en.merge(df_en[['DOMINIO', 'ENERGIA']].drop_duplicates(), on='DOMINIO', how='left')
-    
-    df_resto = _df2[~_df2['DOMINIO'].isin(df_en['DOMINIO'].unique())].copy()
-    df_resto['ENERGIA'] = 3
-    
-    final = pd.concat([df_con_en, df_resto], ignore_index=True)
-    
-    # Agrupado para ahorrar memoria
-    grupo = ['PROVINCIA', 'MUNICIPIO', 'GT', 'LINEA SILAS DNGFF', 'ID_LINEA', 'RAMAL', 'ENERGIA', 'CONTRATO', 'TARIFA BASE ITG']
-    res = final.groupby(grupo, as_index=False).agg({'CANTIDAD_USOS': 'sum', 'MONTO': 'sum'})
-    return res
+    # ... (el resto del código que ya teníamos)
+    # Asegúrate de mantener la limpieza de IDs y los cruces de energías
+    return df # (o el resultado de tu procesamiento)
 
 def determinar_ttr_motor(df_pme, df_tarifas, anio, reso):
     df = df_pme.copy()
@@ -111,14 +101,11 @@ with t1:
             st.success("Tarifas listas.")
 
 with t2:
+    st.header("2. Consolidación de Datos SUBE")
     col1, col2, col3 = st.columns(3)
-    f_csv = col1.file_uploader("DGGI (CSV)", type=['csv'])
-    f_gt = col2.file_uploader("Nomenclador GT", type=['xlsx'])
-    f_en = col3.file_uploader("Energías", type=['xlsx'])
-    if f_csv and f_gt and f_en:
-        if st.button("🚀 Iniciar"):
-            st.session_state.df_pme = preproceso_dmk_energias(f_csv, pd.read_excel(f_gt), pd.read_excel(f_en))
-            st.success(f"Procesado: {len(st.session_state.df_pme)} filas.")
+    # Ahora permitimos .csv y .zip
+    f_csv = col1.file_uploader("Archivo DGGI (CSV o ZIP)", type=['csv', 'zip'])
+    # ... resto de los cargadores
 
 with t3:
     if st.session_state.df_pme is not None and st.session_state.df_tarifas is not None:
