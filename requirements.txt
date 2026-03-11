@@ -1,5 +1,6 @@
+streamlit>=1.40.0
 pandas
 numpy
-streamlit
 openpyxl
 xlsxwriter
+altair<5.0.0
