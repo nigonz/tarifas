@@ -214,3 +214,4 @@ with t3:
                 res.to_excel(b_dmk, index=False)
                 st.download_button(f"📥 Bajar DMK Final", b_dmk.getvalue(), f"Liquidacion_DMK_{st.session_state.periodo}.xlsx", key="dl_dmk")
     else:
+        st.warning("⚠️ Primero sincronizá los nomencladores en la Tab 2.")
