@@ -5,7 +5,7 @@ import io
 import zipfile
 
 # --- CONFIGURACIÓN DE NIVEL PRODUCCIÓN ---
-st.set_page_config(page_title="Fiscalización TTR Natalia v8.1", layout="wide")
+st.set_page_config(page_title="Fiscalización TTR v8.1", layout="wide")
 
 # =============================================================================
 # BLOQUE 0: EL ESCUDO (NORMALIZACIÓN ABSOLUTA)
