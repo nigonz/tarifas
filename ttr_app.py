@@ -77,7 +77,7 @@ def motor_tarifas_comerciales(df_prev, dic_manuales):
 # INTERFAZ TAB 1 (AISLADA)
 # =============================================================================
 
-st.title("Módulo de Tarifas Natalia v6.0")
+st.title("Módulo de Tarifas Calculo de Tarifas Comerciales v6.0")
 
 if 'df_tarifas_2026' not in st.session_state:
     st.session_state.df_tarifas_2026 = None
