@@ -5,7 +5,7 @@ import io
 import zipfile
 
 # --- CONFIGURACIÓN DE NIVEL PRODUCCIÓN ---
-st.set_page_config(page_title="Fiscalización TTR v8.1", layout="wide")
+st.set_page_config(page_title="Fiscalización TTR Natalia v8.2", layout="wide")
 
 # =============================================================================
 # BLOQUE 0: EL ESCUDO (NORMALIZACIÓN ABSOLUTA)
@@ -22,11 +22,12 @@ def formatear_ids(df, columnas_id):
     """Fuerza los IDs a texto limpio para evitar errores de match."""
     for col in columnas_id:
         if col in df.columns:
-            df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().upper()
+            # CORRECCIÓN: Se agrega .str antes de .upper() para evitar AttributeError
+            df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.upper()
     return df
 
 # =============================================================================
-# BLOQUE 1: MOTOR DE TARIFAS
+# BLOQUE 1: MOTOR DE TARIFAS (PROYECCIÓN)
 # =============================================================================
 
 def motor_tarifas_v8(df_base, manuales):
@@ -60,7 +61,7 @@ def motor_tarifas_v8(df_base, manuales):
     return pd.DataFrame(res)
 
 # =============================================================================
-# BLOQUE 2: MOTOR DE NOMENCLADORES
+# BLOQUE 2: MOTOR DE NOMENCLADORES (LÓGICA DOBLE LLAVE)
 # =============================================================================
 
 def motor_maestro_v8(df_v2, df_elr, df_ts):
@@ -91,7 +92,7 @@ def motor_maestro_v8(df_v2, df_elr, df_ts):
     return v3_final, ts_actualizado
 
 # =============================================================================
-# BLOQUE 3: MOTOR DMK (SOLUCIÓN AL ERROR LM622)
+# BLOQUE 3: MOTOR DMK (SOLUCIÓN LM622 Y RENDIMIENTO)
 # =============================================================================
 
 def motor_dmk_v8(f_sube, df_v3, df_en):
@@ -102,7 +103,7 @@ def motor_dmk_v8(f_sube, df_v3, df_en):
                 with z.open(csv_f) as f: data = f.read()
         else: data = f_sube.getvalue()
         
-        # --- SOLUCIÓN: Forzamos ID_LINEA a Texto (Utf8) desde el inicio ---
+        # Schema overrides para forzar texto en IDs
         try:
             lf = pl.read_csv(io.BytesIO(data), encoding='iso-8859-1', separator=";", 
                              infer_schema_length=10000, 
@@ -114,17 +115,14 @@ def motor_dmk_v8(f_sube, df_v3, df_en):
                              schema_overrides={"ID_LINEA": pl.Utf8, "RAMAL": pl.Utf8}).lazy()
 
         lf = lf.rename({c: c.strip().upper().replace(" ", "_") for c in lf.collect_schema().names()})
-        # Limpieza de IDs en DMK
-        lf = lf.with_columns(pl.col("ID_LINEA").str.replace(r"\.0$", "").str.strip())
+        lf = lf.with_columns(pl.col("ID_LINEA").str.replace(r"\.0$", "").str.strip().str.to_uppercase())
         
-        # Preparamos V3 con IDs como Texto
         df_v3_proc = formatear_ids(df_v3.copy(), ["ID_LINEA"])
         v3_pl = pl.from_pandas(df_v3_proc).lazy()
         
         en_pl = pl.from_pandas(blindar_nombres(df_en)).lazy()
-        en_pl = en_pl.with_columns(pl.col("DOMINIO").cast(pl.Utf8).str.strip().upper())
+        en_pl = en_pl.with_columns(pl.col("DOMINIO").cast(pl.Utf8).str.strip().str.to_uppercase())
 
-        # Join Seguro
         lf = lf.join(v3_pl, on="ID_LINEA", how="inner").join(en_pl, on="DOMINIO", how="left")
         
         lf = lf.with_columns([
@@ -153,14 +151,14 @@ if 'df_ts_upd' not in st.session_state: st.session_state.df_ts_upd = None
 if 'df_tarifas' not in st.session_state: st.session_state.df_tarifas = None
 if 'periodo' not in st.session_state: st.session_state.periodo = "Febrero"
 
-st.title(f"Fiscalización TTR Natalia v8.1 - {st.session_state.periodo} 2026")
+st.title(f"Fiscalización TTR Natalia v8.2 - Producción")
 
 t1, t2, t3 = st.tabs(["💰 1. TARIFAS", "📋 2. NOMENCLADORES", "📂 3. PROCESO DMK"])
 
 with t1:
     f_ref = st.file_uploader("Subir Tarifas Noviembre", key="f1")
     if f_ref:
-        st.session_state.periodo = st.text_input("Mes:", st.session_state.periodo)
+        st.session_state.periodo = st.text_input("Mes de liquidación:", st.session_state.periodo)
         c = st.columns(5)
         m = {'1SCN': c[0].number_input("1SCN", 494.33), '2SCN': c[1].number_input("2SCN", 551.24), '3SCN': c[2].number_input("3SCN", 593.70), '4SCN': c[3].number_input("4SCN", 636.21), '5SCN': c[4].number_input("5SCN", 678.42)}
         if st.button("🔄 Calcular"):
@@ -173,7 +171,7 @@ with t1:
         st.download_button(f"📥 Bajar Tarifas_{st.session_state.periodo}.xlsx", buf1.getvalue(), f"Tarifas_{st.session_state.periodo}.xlsx", key="d_t")
 
 with t2:
-    st.header("Sincronización Maestra")
+    st.header("Sincronización Maestra (Línea + Ramal)")
     c1, c2, c3 = st.columns(3)
     fv2 = c1.file_uploader("Nomenclador v2 Base")
     felr = c2.file_uploader("ELR Actualizado")
@@ -183,18 +181,18 @@ with t2:
         st.session_state.df_v3 = v3
         st.session_state.df_ts_upd = ts_up
     if st.session_state.df_v3 is not None:
-        st.success("✅ Archivos Listos")
-        col1, col2 = st.columns(2)
+        st.success("✅ Archivos Actualizados!")
+        col_d1, col_d2 = st.columns(2)
         b_v3 = io.BytesIO()
         st.session_state.df_v3.to_excel(b_v3, index=False)
-        col1.download_button("📥 Bajar Maestro V3", b_v3.getvalue(), f"Maestro_V3_{st.session_state.periodo}.xlsx", key="d_v3")
+        col_d1.download_button("📥 Maestro V3", b_v3.getvalue(), f"Maestro_V3_{st.session_state.periodo}.xlsx", key="d_v3")
         b_ts = io.BytesIO()
         st.session_state.df_ts_upd.to_excel(b_ts, index=False)
-        col2.download_button("📥 Bajar TS Actualizado", b_ts.getvalue(), f"TS_Actualizado_{st.session_state.periodo}.xlsx", key="d_ts")
+        col_d2.download_button("📥 TS Actualizado", b_ts.getvalue(), f"TS_Actualizado_{st.session_state.periodo}.xlsx", key="d_ts")
 
 with t3:
     if st.session_state.df_v3 is not None:
-        st.header(f"Liquidación DMK {st.session_state.periodo}")
+        st.header(f"Liquidación DMK Pesado")
         f_dmk = st.file_uploader("DMK (ZIP o CSV)")
         f_en = st.file_uploader("Energías")
         if f_dmk and f_en and st.button("⚡ Ejecutar"):
@@ -203,6 +201,6 @@ with t3:
                 st.dataframe(res.head())
                 b_dmk = io.BytesIO()
                 res.to_excel(b_dmk, index=False)
-                st.download_button(f"📥 Bajar DMK_{st.session_state.periodo}.xlsx", b_dmk.getvalue(), f"Liquidacion_DMK_{st.session_state.periodo}.xlsx", key="d_dmk")
+                st.download_button(f"📥 Bajar Liquidación", b_dmk.getvalue(), f"Liquidacion_DMK_{st.session_state.periodo}.xlsx", key="d_dmk")
     else:
-        st.warning("⚠️ Primero generá los nomencladores en la Tab 2.")
+        st.warning("⚠️ Primero sincronizá los archivos en la Tab 2.")
