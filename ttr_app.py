@@ -71,40 +71,61 @@ def motor_tarifas_auditoria(df_base, manuales):
     return pd.DataFrame(res)
 
 def motor_dmk_polars(f_sube, df_gt, df_en):
-    """Procesamiento de 210MB con Polars (Lógica Colab)"""
-    gt_pl = pl.from_pandas(df_gt[['ID_LINEA', 'GT', 'Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']]).lazy()
-    en_pl = pl.from_pandas(df_en[['DOMINIO', 'ENERGIA']]).lazy()
+    """
+    Procesamiento de 210MB con soporte para ZIP y CSV.
+    Detecta si es un archivo comprimido y extrae el contenido para Polars.
+    """
+    try:
+        # 1. Manejo del archivo (ZIP o CSV directo)
+        if f_sube.name.endswith('.zip'):
+            with zipfile.ZipFile(f_sube) as z:
+                # Buscamos el primer archivo .csv dentro del ZIP
+                csv_filename = [n for n in z.namelist() if n.endswith('.csv')][0]
+                with z.open(csv_filename) as f:
+                    contenido_csv = f.read()
+        else:
+            contenido_csv = f_sube.getvalue()
 
-    lf = pl.read_csv(f_sube.getvalue(), encoding='iso-8859-1', separator=";", infer_schema_length=10000).lazy()
-    lf = lf.rename({c: c.strip().upper() for c in lf.columns})
-    lf = lf.with_columns(pl.col("ID_LINEA").cast(pl.Utf8).str.replace(r"\.0$", ""))
-    gt_pl = gt_pl.with_columns(pl.col("ID_LINEA").cast(pl.Utf8).str.replace(r"\.0$", ""))
+        # 2. Preparar Nomencladores
+        gt_pl = pl.from_pandas(df_gt[['ID_LINEA', 'GT', 'Linea SILAS DNGFF', 'PROVINCIA', 'MUNICIPIO']]).lazy()
+        en_pl = pl.from_pandas(df_en[['DOMINIO', 'ENERGIA']]).lazy()
 
-    lf = lf.join(gt_pl, on="ID_LINEA", how="inner").join(en_pl, on="DOMINIO", how="left")
-    
-    # Lógica de Carriles PME + Resto
-    lf = lf.with_columns([
-        pl.when(pl.col("ENERGIA").is_null()).then(pl.lit("NO")).otherwise(pl.col("DOMINIO")).alias("DOMINIO"),
-        pl.col("ENERGIA").fill_null(3)
-    ])
+        # 3. Leer con Polars (Lazy)
+        lf = pl.read_csv(contenido_csv, encoding='iso-8859-1', separator=";", infer_schema_length=10000).lazy()
+        
+        # Limpieza de nombres y casteo
+        lf = lf.rename({c: c.strip().upper() for c in lf.columns})
+        lf = lf.with_columns(pl.col("ID_LINEA").cast(pl.Utf8).str.replace(r"\.0$", ""))
+        gt_pl = gt_pl.with_columns(pl.col("ID_LINEA").cast(pl.Utf8).str.replace(r"\.0$", ""))
 
-    # Cálculos de Compensaciones (ATS e ITG)
-    lf = lf.with_columns([
-        (pl.col("DESCUENTO X INTEGRACION") * pl.col("CANTIDAD_USOS")).alias("COMP_ITG"),
-        pl.when(pl.col("CONTRATO") == 621)
-          .then(
-              pl.when(pl.col("GT") == "INP")
-                .then((pl.col("DEBITADO") / 0.45) * 0.55 * pl.col("CANTIDAD_USOS"))
-                .otherwise((pl.col("TARIFA BASE ITG") - pl.col("DEBITADO") - pl.col("DESCUENTO X INTEGRACION")) * pl.col("CANTIDAD_USOS"))
-          ).otherwise(0).alias("COMP_ATS")
-    ])
+        # 4. Cruce de Datos y Lógica de Carriles
+        lf = lf.join(gt_pl, on="ID_LINEA", how="inner").join(en_pl, on="DOMINIO", how="left")
+        
+        lf = lf.with_columns([
+            pl.when(pl.col("ENERGIA").is_null()).then(pl.lit("NO")).otherwise(pl.col("DOMINIO")).alias("DOMINIO"),
+            pl.col("ENERGIA").fill_null(3)
+        ])
 
-    res = lf.group_by(['PROVINCIA', 'MUNICIPIO', 'GT', 'Linea SILAS DNGFF', 'ID_LINEA', 'RAMAL', 'DOMINIO', 'ENERGIA', 'CONTRATO', 'TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION']).agg([pl.col('CANTIDAD_USOS').sum(), pl.col('COMP_ITG').sum(), pl.col('COMP_ATS').sum()]).collect().to_pandas()
-    
-    res['COMP_ATS s/IVA'] = res['COMP_ATS'] / 1.105
-    res['COMP_ITG s/IVA'] = res['COMP_ITG'] / 1.105
-    return res
+        # 5. Cálculos de Compensaciones (ATS e ITG)
+        lf = lf.with_columns([
+            (pl.col("DESCUENTO X INTEGRACION") * pl.col("CANTIDAD_USOS")).alias("COMP_ITG"),
+            pl.when(pl.col("CONTRATO") == 621)
+              .then(
+                  pl.when(pl.col("GT") == "INP")
+                    .then((pl.col("DEBITADO") / 0.45) * 0.55 * pl.col("CANTIDAD_USOS"))
+                    .otherwise((pl.col("TARIFA BASE ITG") - pl.col("DEBITADO") - pl.col("DESCUENTO X INTEGRACION")) * pl.col("CANTIDAD_USOS"))
+              ).otherwise(0).alias("COMP_ATS")
+        ])
 
+        res = lf.group_by(['PROVINCIA', 'MUNICIPIO', 'GT', 'Linea SILAS DNGFF', 'ID_LINEA', 'RAMAL', 'DOMINIO', 'ENERGIA', 'CONTRATO', 'TARIFA BASE ITG', 'DEBITADO', 'DESCUENTO X INTEGRACION']).agg([pl.col('CANTIDAD_USOS').sum(), pl.col('COMP_ITG').sum(), pl.col('COMP_ATS').sum()]).collect().to_pandas()
+        
+        res['COMP_ATS s/IVA'] = res['COMP_ATS'] / 1.105
+        res['COMP_ITG s/IVA'] = res['COMP_ITG'] / 1.105
+        return res
+
+    except Exception as e:
+        st.error(f"Error al procesar el archivo comprimido: {e}")
+        return None
 # =============================================================================
 # INTERFAZ DE USUARIO (TABS)
 # =============================================================================
@@ -160,7 +181,8 @@ with tab2:
     if st.session_state.df_tarifas is not None:
         st.header(f"Procesamiento DMK: {st.session_state.periodo_actual} 2026")
         col1, col2, col3 = st.columns(3)
-        f_sube = col1.file_uploader("Archivo DMK (CSV 210MB)")
+        # Ahora aceptamos tanto .csv como .zip
+        f_sube = col1.file_uploader("Archivo DMK (CSV o ZIP)", type=['csv', 'zip'])
         f_nom = col2.file_uploader("Nomenclador (Excel)")
         f_en = col3.file_uploader("Energías (Excel)")
         
