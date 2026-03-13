@@ -119,4 +119,5 @@ if f_ref:
                 label="📥 Descargar Tarifas_Calculadas_2026.xlsx",
                 data=buf.getvalue(),
                 file_name="Tarifas_Calculadas_2026.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
