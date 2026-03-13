@@ -11,6 +11,93 @@ st.set_page_config(page_title="Fiscalización TTR Natalia v6.5", layout="wide")
 # =============================================================================
 # MOTORES DE LÓGICA (PROCESAMIENTO)
 # =============================================================================
+import streamlit as st
+import pandas as pd
+import io
+
+# =============================================================================
+# MOTOR DE NOMENCLADOR MAESTRO V3 (El "Súper Buscar V")
+# =============================================================================
+
+def motor_v3_maestro(df_v2, df_elr, df_ts):
+    """
+    Sincroniza los 3 archivos usando un escudo de columnas para evitar errores.
+    """
+    # 1. Normalización de Columnas (Mayúsculas y sin espacios)
+    for df in [df_v2, df_elr, df_ts]:
+        df.columns = [str(c).strip().upper() for c in df.columns]
+
+    # 2. Identificación Inteligente de IDs (El Escudo)
+    # Buscamos la columna que contenga 'LINEA' e 'ID' en cada archivo
+    def encontrar_id(df):
+        for c in df.columns:
+            if ('ID' in c and 'LINEA' in c) or ('IDLINEANS' in c):
+                return c
+        return df.columns[0] # Fallback al primero si no encuentra
+
+    id_v2 = encontrar_id(df_v2)
+    id_elr = encontrar_id(df_elr)
+    id_ts = encontrar_id(df_ts)
+
+    # Limpieza de IDs (Texto y sin .0)
+    for df, col in zip([df_v2, df_elr, df_ts], [id_v2, id_elr, id_ts]):
+        df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+
+    # 3. CRUCE 1: Base v2 + ELR (Actualiza GT y Línea SILAS)
+    # Buscamos columnas del ELR por palabras clave
+    col_gt_elr = [c for c in df_elr.columns if 'GRUPO' in c and 'TARIF' in c][0]
+    col_lin_elr = [c for c in df_elr.columns if 'LINEA' in c and 'BO' not in c and 'DNGFF' not in c][0]
+    
+    elr_reducido = df_elr[[id_elr, col_gt_elr, col_lin_elr]].drop_duplicates(subset=[id_elr])
+    
+    # Unimos (Merge)
+    res = df_v2.merge(elr_reducido, left_on=id_v2, right_on=id_elr, how='left')
+
+    # 4. CRUCE 2: Resultado + Nomenclador TS (Trae el TS Final)
+    # Buscamos columna de TS en el archivo de ramales
+    col_ts_file = [c for c in df_ts.columns if 'TIPO' in c and 'SERV' in c][0]
+    
+    ts_reducido = df_ts[[id_ts, col_ts_file]].drop_duplicates(subset=[id_ts])
+    
+    # Unimos
+    final = res.merge(ts_reducido, left_on=id_v2, right_on=id_ts, how='left')
+
+    # 5. Limpieza de columnas duplicadas tras el merge
+    final = final.loc[:, ~final.columns.duplicated()]
+    
+    return final
+
+# =============================================================================
+# INTERFAZ (UI) - PESTAÑA 2: NOMENCLADOR
+# =============================================================================
+
+# (Asumimos que esto vive dentro de tu st.tabs)
+
+with tab_v3: # Esta es la Pestaña 2
+    st.header("Generador de Nomenclador Maestro V3 📋")
+    st.markdown("Subí los 3 archivos para sincronizar la base de Febrero.")
+
+    c1, c2, c3 = st.columns(3)
+    f_v2 = c1.file_uploader("Nomenclador Base v2", type=['xlsx', 'csv'])
+    f_elr = c2.file_uploader("ELR Febrero", type=['xlsx', 'csv'])
+    f_ts = c3.file_uploader("Nomenclador TS (Ramales)", type=['xlsx', 'csv'])
+
+    if f_v2 and f_elr and f_ts:
+        if st.button("🔄 Sincronizar Archivos"):
+            # Lectura automática
+            d_v2 = pd.read_excel(f_v2) if f_v2.name.endswith('.xlsx') else pd.read_csv(f_v2)
+            d_elr = pd.read_excel(f_elr) if f_elr.name.endswith('.xlsx') else pd.read_csv(f_elr)
+            d_ts = pd.read_excel(f_ts) if f_ts.name.endswith('.xlsx') else pd.read_csv(f_ts)
+            
+            with st.spinner("Cruzando datos..."):
+                st.session_state.df_v3 = motor_v3_maestro(d_v2, d_elr, d_ts)
+                st.success("✅ Nomenclador V3 generado. Ya podés usarlo en la Tab de DMK.")
+                st.dataframe(st.session_state.df_v3.head())
+
+                # Botón de Descarga
+                buf = io.BytesIO()
+                st.session_state.df_v3.to_excel(buf, index=False)
+                st.download_button("📥 Descargar NOMENCLADOR_V3_FEBRERO.xlsx", buf.getvalue(), "NOMENCLADOR_V3_FEBRERO.xlsx")
 
 def motor_tarifas_auditoria(df_base, manuales):
     """Proyecta tarifas y genera tabla de auditoría"""
@@ -168,3 +255,28 @@ with t2:
             st.download_button(f"📥 Bajar dggi_DMK_{st.session_state.per_global}.xlsx", buf2.getvalue(), f"dggi_DMK_{st.session_state.per_global}.xlsx")
     else:
         st.warning("⚠️ Primero calculá las tarifas en la Tab 1.")
+        with tab_v3: # Esta es la Pestaña 2
+    st.header("Generador de Nomenclador Maestro V3 📋")
+    st.markdown("Subí los 3 archivos para sincronizar la base de Febrero.")
+
+    c1, c2, c3 = st.columns(3)
+    f_v2 = c1.file_uploader("Nomenclador Base v2", type=['xlsx', 'csv'])
+    f_elr = c2.file_uploader("ELR Febrero", type=['xlsx', 'csv'])
+    f_ts = c3.file_uploader("Nomenclador TS (Ramales)", type=['xlsx', 'csv'])
+
+    if f_v2 and f_elr and f_ts:
+        if st.button("🔄 Sincronizar Archivos"):
+            # Lectura automática
+            d_v2 = pd.read_excel(f_v2) if f_v2.name.endswith('.xlsx') else pd.read_csv(f_v2)
+            d_elr = pd.read_excel(f_elr) if f_elr.name.endswith('.xlsx') else pd.read_csv(f_elr)
+            d_ts = pd.read_excel(f_ts) if f_ts.name.endswith('.xlsx') else pd.read_csv(f_ts)
+            
+            with st.spinner("Cruzando datos..."):
+                st.session_state.df_v3 = motor_v3_maestro(d_v2, d_elr, d_ts)
+                st.success("✅ Nomenclador V3 generado. Ya podés usarlo en la Tab de DMK.")
+                st.dataframe(st.session_state.df_v3.head())
+
+                # Botón de Descarga
+                buf = io.BytesIO()
+                st.session_state.df_v3.to_excel(buf, index=False)
+                st.download_button("📥 Descargar NOMENCLADOR_V3_FEBRERO.xlsx", buf.getvalue(), "NOMENCLADOR_V3_FEBRERO.xlsx")
