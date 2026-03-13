@@ -5,7 +5,7 @@ import io
 import zipfile
 
 # --- CONFIGURACIÓN DE NIVEL PRODUCCIÓN ---
-st.set_page_config(page_title="Fiscalización TTR Natalia v8.0", layout="wide")
+st.set_page_config(page_title="Fiscalización TTR Natalia v8.1", layout="wide")
 
 # =============================================================================
 # BLOQUE 0: EL ESCUDO (NORMALIZACIÓN ABSOLUTA)
@@ -14,9 +14,7 @@ st.set_page_config(page_title="Fiscalización TTR Natalia v8.0", layout="wide")
 def blindar_nombres(df):
     """Limpia nombres de columnas, elimina sufijos de merge y quita duplicados."""
     if df is None: return None
-    # 1. Limpieza de caracteres y sufijos
     df.columns = [str(c).upper().strip().replace(" ", "_").split('_X')[0].split('_Y')[0] for c in df.columns]
-    # 2. Eliminación de columnas duplicadas post-merge
     df = df.loc[:, ~df.columns.duplicated()]
     return df
 
@@ -24,11 +22,11 @@ def formatear_ids(df, columnas_id):
     """Fuerza los IDs a texto limpio para evitar errores de match."""
     for col in columnas_id:
         if col in df.columns:
-            df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().upper()
     return df
 
 # =============================================================================
-# BLOQUE 1: MOTOR DE TARIFAS (PROYECCIÓN)
+# BLOQUE 1: MOTOR DE TARIFAS
 # =============================================================================
 
 def motor_tarifas_v8(df_base, manuales):
@@ -43,7 +41,7 @@ def motor_tarifas_v8(df_base, manuales):
     
     res = []
     for _, row in df.iterrows():
-        id_t = str(row[col_id]).strip()
+        id_t = str(row[col_id]).strip().upper()
         v_min_ant, v_max_ant = row['LIMITE_INFERIOR'], row['LIMITE_SUPERIOR']
         
         if id_t in manuales: v_min = v_max = manuales[id_t]
@@ -62,26 +60,22 @@ def motor_tarifas_v8(df_base, manuales):
     return pd.DataFrame(res)
 
 # =============================================================================
-# BLOQUE 2: MOTOR DE NOMENCLADORES (LÓGICA DOBLE LLAVE)
+# BLOQUE 2: MOTOR DE NOMENCLADORES
 # =============================================================================
 
 def motor_maestro_v8(df_v2, df_elr, df_ts):
-    # 1. Blindaje
     df_v2, df_elr, df_ts = blindar_nombres(df_v2), blindar_nombres(df_elr), blindar_nombres(df_ts)
 
-    # 2. Identificar llaves de Línea y Ramal (Lógica Diciembre)
     id_l_elr = [c for c in df_elr.columns if 'ID_LINEA_BO' in c or ('ID' in c and 'LINEA' in c)][0]
     id_r_elr = [c for c in df_elr.columns if 'ID_RAMAL_BO' in c or ('ID' in c and 'RAMAL' in c)][0]
     id_l_ts = [c for c in df_ts.columns if 'IDLINEANS' in c or ('ID' in c and 'LINEA' in c)][0]
     id_r_ts = [c for c in df_ts.columns if 'IDRAMALNS' in c or ('ID' in c and 'RAMAL' in c)][0]
     id_l_base = [c for c in df_v2.columns if 'ID_LINEA' in c][0]
 
-    # Formatear IDs
     df_elr = formatear_ids(df_elr, [id_l_elr, id_r_elr])
     df_ts = formatear_ids(df_ts, [id_l_ts, id_r_ts])
     df_v2 = formatear_ids(df_v2, [id_l_base])
 
-    # 3. ACTUALIZAR TS (RAMAL POR RAMAL)
     col_gt = [c for c in df_elr.columns if 'GRUPO_TARIF' in c][0]
     col_lin_nom = [c for c in df_elr.columns if 'LINEA' in c and 'BO' not in c and 'ID' not in c][0]
     
@@ -89,59 +83,59 @@ def motor_maestro_v8(df_v2, df_elr, df_ts):
     ts_actualizado = df_ts.merge(elr_map, left_on=[id_l_ts, id_r_ts], right_on=[id_l_elr, id_r_elr], how='left')
     ts_actualizado = blindar_nombres(ts_actualizado)
 
-    # 4. ACTUALIZAR MAESTRO V3
     elr_lin_map = df_elr[[id_l_elr, col_gt, col_lin_nom]].drop_duplicates(subset=[id_l_elr])
     v3_final = df_v2.merge(elr_lin_map, left_on=id_l_base, right_on=id_l_elr, how='left')
     v3_final = blindar_nombres(v3_final)
     
-    # Nombres estandarizados para Módulo 3
     v3_final = v3_final.rename(columns={col_lin_nom: 'LINEA_SILAS_FINAL', id_l_base: 'ID_LINEA'})
-    
     return v3_final, ts_actualizado
 
 # =============================================================================
-# BLOQUE 3: MOTOR DMK (POLARS + ZIP + ALTO RENDIMIENTO)
+# BLOQUE 3: MOTOR DMK (SOLUCIÓN AL ERROR LM622)
 # =============================================================================
 
 def motor_dmk_v8(f_sube, df_v3, df_en):
     try:
-        # Carga del CSV desde ZIP o directo
         if f_sube.name.endswith('.zip'):
             with zipfile.ZipFile(f_sube) as z:
                 csv_f = [n for n in z.namelist() if n.endswith('.csv')][0]
                 with z.open(csv_f) as f: data = f.read()
         else: data = f_sube.getvalue()
         
-        # Lectura inteligente Polars
+        # --- SOLUCIÓN: Forzamos ID_LINEA a Texto (Utf8) desde el inicio ---
         try:
-            lf = pl.read_csv(io.BytesIO(data), encoding='iso-8859-1', separator=";", infer_schema_length=10000).lazy()
+            lf = pl.read_csv(io.BytesIO(data), encoding='iso-8859-1', separator=";", 
+                             infer_schema_length=10000, 
+                             schema_overrides={"ID_LINEA": pl.Utf8, "RAMAL": pl.Utf8}).lazy()
             if len(lf.collect_schema().names()) < 5: raise Exception()
         except:
-            lf = pl.read_csv(io.BytesIO(data), encoding='iso-8859-1', separator=",", infer_schema_length=10000).lazy()
+            lf = pl.read_csv(io.BytesIO(data), encoding='iso-8859-1', separator=",", 
+                             infer_schema_length=10000,
+                             schema_overrides={"ID_LINEA": pl.Utf8, "RAMAL": pl.Utf8}).lazy()
 
-        # Normalización de DMK
         lf = lf.rename({c: c.strip().upper().replace(" ", "_") for c in lf.collect_schema().names()})
-        lf = lf.with_columns(pl.col("ID_LINEA").cast(pl.Utf8).str.replace(r"\.0$", ""))
+        # Limpieza de IDs en DMK
+        lf = lf.with_columns(pl.col("ID_LINEA").str.replace(r"\.0$", "").str.strip())
         
-        v3_pl = pl.from_pandas(df_v3).lazy()
+        # Preparamos V3 con IDs como Texto
+        df_v3_proc = formatear_ids(df_v3.copy(), ["ID_LINEA"])
+        v3_pl = pl.from_pandas(df_v3_proc).lazy()
+        
         en_pl = pl.from_pandas(blindar_nombres(df_en)).lazy()
+        en_pl = en_pl.with_columns(pl.col("DOMINIO").cast(pl.Utf8).str.strip().upper())
 
-        # Join y Lógica de Negocio
+        # Join Seguro
         lf = lf.join(v3_pl, on="ID_LINEA", how="inner").join(en_pl, on="DOMINIO", how="left")
+        
         lf = lf.with_columns([
             pl.when(pl.col("ENERGIA").is_null()).then(pl.lit("NO")).otherwise(pl.col("DOMINIO")).alias("DOMINIO"),
             pl.col("ENERGIA").fill_null(3)
         ])
         
-        # Compensaciones (Lógica ATS e ITG)
         lf = lf.with_columns([
             (pl.col("DESCUENTO_X_INTEGRACION") * pl.col("CANTIDAD_USOS")).alias("COMP_ITG"),
             pl.when(pl.col("CONTRATO") == 621)
-              .then(
-                  pl.when(pl.col("GT") == "INP")
-                    .then((pl.col("DEBITADO") / 0.45) * 0.55 * pl.col("CANTIDAD_USOS"))
-                    .otherwise((pl.col("TARIFA_BASE_ITG") - pl.col("DEBITADO") - pl.col("DESCUENTO_X_INTEGRACION")) * pl.col("CANTIDAD_USOS"))
-              ).otherwise(0).alias("COMP_ATS")
+              .then(pl.when(pl.col("GT") == "INP").then((pl.col("DEBITADO") / 0.45) * 0.55 * pl.col("CANTIDAD_USOS")).otherwise((pl.col("TARIFA_BASE_ITG") - pl.col("DEBITADO") - pl.col("DESCUENTO_X_INTEGRACION")) * pl.col("CANTIDAD_USOS"))).otherwise(0).alias("COMP_ATS")
         ])
         
         final = lf.group_by(['GT', 'LINEA_SILAS_FINAL', 'ID_LINEA', 'DOMINIO', 'ENERGIA']).agg([pl.col('CANTIDAD_USOS').sum(), pl.col('COMP_ITG').sum(), pl.col('COMP_ATS').sum()]).collect().to_pandas()
@@ -151,7 +145,7 @@ def motor_dmk_v8(f_sube, df_v3, df_en):
         return None
 
 # =============================================================================
-# INTERFAZ (UI) - UNIFICADA Y PERSISTENTE
+# INTERFAZ (UI)
 # =============================================================================
 
 if 'df_v3' not in st.session_state: st.session_state.df_v3 = None
@@ -159,7 +153,7 @@ if 'df_ts_upd' not in st.session_state: st.session_state.df_ts_upd = None
 if 'df_tarifas' not in st.session_state: st.session_state.df_tarifas = None
 if 'periodo' not in st.session_state: st.session_state.periodo = "Febrero"
 
-st.title(f"Sistema Fiscalización TTR v8.0 - {st.session_state.periodo} 2026")
+st.title(f"Fiscalización TTR Natalia v8.1 - {st.session_state.periodo} 2026")
 
 t1, t2, t3 = st.tabs(["💰 1. TARIFAS", "📋 2. NOMENCLADORES", "📂 3. PROCESO DMK"])
 
@@ -179,29 +173,24 @@ with t1:
         st.download_button(f"📥 Bajar Tarifas_{st.session_state.periodo}.xlsx", buf1.getvalue(), f"Tarifas_{st.session_state.periodo}.xlsx", key="d_t")
 
 with t2:
-    st.header("Sincronización por Línea y Ramal")
+    st.header("Sincronización Maestra")
     c1, c2, c3 = st.columns(3)
     fv2 = c1.file_uploader("Nomenclador v2 Base")
     felr = c2.file_uploader("ELR Actualizado")
     fts = c3.file_uploader("Nomenclador TS")
-    
     if fv2 and felr and fts and st.button("🔄 Sincronizar"):
         v3, ts_up = motor_maestro_v8(pd.read_excel(fv2), pd.read_excel(felr), pd.read_excel(fts))
         st.session_state.df_v3 = v3
         st.session_state.df_ts_upd = ts_up
-    
     if st.session_state.df_v3 is not None:
-        st.success("✅ Archivos Actualizados!")
+        st.success("✅ Archivos Listos")
         col1, col2 = st.columns(2)
-        # Descarga V3
         b_v3 = io.BytesIO()
         st.session_state.df_v3.to_excel(b_v3, index=False)
         col1.download_button("📥 Bajar Maestro V3", b_v3.getvalue(), f"Maestro_V3_{st.session_state.periodo}.xlsx", key="d_v3")
-        # Descarga TS
         b_ts = io.BytesIO()
         st.session_state.df_ts_upd.to_excel(b_ts, index=False)
         col2.download_button("📥 Bajar TS Actualizado", b_ts.getvalue(), f"TS_Actualizado_{st.session_state.periodo}.xlsx", key="d_ts")
-        st.dataframe(st.session_state.df_v3.head())
 
 with t3:
     if st.session_state.df_v3 is not None:
