@@ -5,152 +5,166 @@ import io
 import zipfile
 from datetime import datetime
 
-# --- CONFIGURACIÓN DE NIVEL PRODUCCIÓN ---
-st.set_page_config(page_title="Fiscalización TTR Natalia v8.6", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Fiscalización TTR Natalia v8.9", layout="wide")
 
 # =============================================================================
-# BLOQUE 0: EL ESCUDO (NORMALIZACIÓN Y LIMPIEZA)
+# BLOQUE 0: UTILIDADES
 # =============================================================================
 
 def blindar_nombres(df):
-    """Estandariza encabezados para procesos internos."""
     if df is None: return None
     df.columns = [str(c).upper().strip().replace(" ", "_").split('_X')[0].split('_Y')[0] for c in df.columns]
     return df
 
 def formatear_ids(df, columnas_id):
-    """Asegura que los IDs sean texto puro y limpio."""
     for col in columnas_id:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.upper()
     return df
 
 # =============================================================================
-# BLOQUE 1: MOTOR MAESTRO (FIX 16 COLUMNAS / 443 FILAS)
+# BLOQUE 1: MOTOR TARIFAS (PROYECCIÓN)
 # =============================================================================
 
-def motor_maestro_v8_6(df_v2, df_elr, df_ts):
-    # 1. Guardar el molde original (Nombres de columnas y orden exacto)
-    columnas_originales = df_v2.columns.tolist()
-    ids_originales = df_v2[df_v2.columns[0]].astype(str).str.strip().str.upper().tolist()
-
-    # 2. Normalización interna
-    df_v2_int = blindar_nombres(df_v2.copy())
-    df_elr_int = blindar_nombres(df_elr.copy())
+def motor_proyeccion_tarifas(df_nov, manuales):
+    df = blindar_nombres(df_nov.copy())
+    col_id = [c for c in df.columns if 'ID' in c or 'GT' in c][0]
+    v1_ant = pd.to_numeric(df.loc[df[col_id] == '1SCN', 'LIMITE_INFERIOR'].astype(str).str.replace(',', '.'), errors='coerce').values[0]
+    factor = manuales['1SCN'] / v1_ant
     
-    id_l_base = df_v2_int.columns[0] # Usualmente ID_LINEA
-    id_l_elr = [c for c in df_elr_int.columns if 'ID_LINEA_BO' in c or ('ID' in c and 'LINEA' in c)][0]
-    col_gt_elr = [c for c in df_elr_int.columns if 'GRUPO_TARIF' in c][0]
-
-    df_v2_int = formatear_ids(df_v2_int, [id_l_base])
-    df_elr_int = formatear_ids(df_elr_int, [id_l_elr])
-
-    # 3. Limpieza de ELR para evitar duplicados (Evita pasar de 443 a 444 filas)
-    elr_map = df_elr_int[[id_l_elr, col_gt_elr]].drop_duplicates(subset=[id_l_elr])
-
-    # 4. Actualización Quirúrgica (Merge)
-    # Solo nos traemos el GT nuevo, sin agregar columnas basura
-    v3_final = df_v2_int.merge(elr_map, left_on=id_l_base, right_on=id_l_elr, how='left')
-
-    # 5. Pisar el GT original con el nuevo
-    if 'GT' in v3_final.columns:
-        v3_final['GT'] = v3_final[col_gt_elr].fillna(v3_final['GT'])
-    
-    # 6. Restauración del Molde (Volver a 16 columnas y nombres originales)
-    # Filtramos para que solo queden las IDs que estaban en el molde original (Elimina la 4220)
-    v3_final = v3_final[v3_final[id_l_base].isin(ids_originales)]
-    
-    # Reasignamos los nombres de columna originales
-    v3_final = v3_final[df_v2_int.columns] # Quitamos las columnas del merge
-    v3_final.columns = columnas_originales # Restauramos espacios y mayúsculas originales
-
-    # Auditoría simple
-    audit = pd.DataFrame({
-        "ID_LINEA": ids_originales,
-        "ESTADO": ["✅ OK" if id in v3_final[v3_final.columns[0]].values else "❌ Perdido" for id in ids_originales]
-    })
-
-    return v3_final, audit
+    res = []
+    for _, row in df.iterrows():
+        id_t = str(row[col_id]).strip().upper()
+        v_ant = pd.to_numeric(str(row['LIMITE_INFERIOR']).replace(',', '.'), errors='coerce')
+        if id_t in manuales: v_nue = manuales[id_t]
+        elif 'SEN' in id_t and 'SESN' not in id_t: v_nue = manuales.get(id_t.replace('SEN', 'SCN'), manuales['1SCN']) * 1.25
+        elif 'SEAN' in id_t and 'SEASN' not in id_t: v_nue = manuales.get(id_t.replace('SEAN', 'SCN'), manuales['1SCN']) * 1.75
+        elif 'SCSN' in id_t: v_nue = manuales.get(id_t.replace('SCSN', 'SCN'), manuales['1SCN']) * 1.59
+        elif 'SESN' in id_t: v_nue = (manuales.get(id_t.replace('SESN', 'SCN'), manuales['1SCN']) * 1.59) * 1.25
+        elif 'SEASN' in id_t: v_nue = (manuales.get(id_t.replace('SEASN', 'SCN'), manuales['1SCN']) * 1.59) * 1.75
+        else: v_nue = v_ant * factor
+        res.append({'GT': id_t, 'TARIFA_NOV': round(v_ant, 2), 'TARIFA_FEB': round(v_nue, 2)})
+    return pd.DataFrame(res)
 
 # =============================================================================
-# BLOQUE 2: MOTOR DMK (SOLUCIÓN ERROR 'LM622' Y POLARS)
+# BLOQUE 2: MOTOR MAESTRO (16 COLUMNAS)
 # =============================================================================
 
-def motor_dmk_v8_6(f_sube, df_v3, df_en, fecha_corte="2026-02-14"):
+def motor_maestro_v8_9(df_v2, df_elr):
+    cols_org = df_v2.columns.tolist()
+    ids_org = df_v2[df_v2.columns[0]].astype(str).str.strip().str.upper().tolist()
+    df_v2_i, df_elr_i = blindar_nombres(df_v2.copy()), blindar_nombres(df_elr.copy())
+    id_l_base = df_v2_i.columns[0]
+    id_l_elr = [c for c in df_elr_i.columns if 'ID_LINEA_BO' in c or 'ID' in c][0]
+    col_gt_elr = [c for c in df_elr_i.columns if 'GRUPO_TARIF' in c][0]
+    elr_map = df_elr_i[[id_l_elr, col_gt_elr]].drop_duplicates(subset=[id_l_elr])
+    v3 = df_v2_i.merge(elr_map, left_on=id_l_base, right_on=id_l_elr, how='left')
+    v3['GT'] = v3[col_gt_elr].fillna(v3['GT'])
+    v3 = v3[v3[id_l_base].isin(ids_org)]
+    v3 = v3[df_v2_i.columns]
+    v3.columns = cols_org
+    return v3
+
+# =============================================================================
+# BLOQUE 3: MOTOR DMK (MES PARTIDO + CÁLCULOS RESTAURADOS)
+# =============================================================================
+
+def motor_dmk_v8_9(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
     try:
-        if f_sube.name.endswith('.zip'):
-            with zipfile.ZipFile(f_sube) as z:
-                csv_f = [n for n in z.namelist() if n.endswith('.csv')][0]
-                with z.open(csv_f) as f: data = f.read()
-        else: data = f_sube.getvalue()
-
-        # SOLUCIÓN POLARS: infer_schema_length=0 obliga a leer TODO como texto (evita error LM622)
-        lf = pl.read_csv(io.BytesIO(data), 
-                         encoding='iso-8859-1', 
-                         separator=";", 
-                         infer_schema_length=0).lazy()
-
-        # Limpieza de columnas
+        # 1. Lectura segura (LM622 Fix)
+        data = f_dmk.getvalue() if not f_dmk.name.endswith('.zip') else zipfile.ZipFile(f_dmk).read(zipfile.ZipFile(f_dmk).namelist()[0])
+        lf = pl.read_csv(io.BytesIO(data), encoding='iso-8859-1', separator=";", infer_schema_length=0).lazy()
+        
+        # 2. Normalización
         lf = lf.rename({c: c.strip().upper().replace(" ", "_") for c in lf.collect_schema().names()})
+        lf = lf.with_columns([
+            pl.col("ID_LINEA").str.replace(r"\.0$", "").str.strip_chars().str.to_uppercase(),
+            pl.col("FECHA").str.to_date("%d/%m/%Y")
+        ])
         
-        # Casteo seguro de IDs a String
-        lf = lf.with_columns(pl.col("ID_LINEA").str.replace(r"\.0$", "").str.strip_chars().str.to_uppercase())
-        
-        # --- LÓGICA DE MES PARTIDO (TTR) ---
-        # Convertimos fecha para el switch
-        lf = lf.with_columns(pl.col("FECHA").str.to_date("%d/%m/%Y"))
-        
-        # Aquí se aplicaría el cruce con tarifas según la fecha
-        # (Lógica simplificada para no romper el flujo actual)
-        
+        # 3. Joins (Nomenclador para GT + Tarifas para Proyección + Energías)
         v3_pl = pl.from_pandas(formatear_ids(df_v3.copy(), [df_v3.columns[0]])).lazy()
         v3_pl = v3_pl.rename({df_v3.columns[0]: "ID_LINEA"})
-
-        # Join y resultado
-        res = lf.join(v3_pl, on="ID_LINEA", how="inner").collect().to_pandas()
-        return res
+        tar_pl = pl.from_pandas(df_tarifas).lazy()
+        en_pl = pl.from_pandas(blindar_nombres(df_en)).lazy()
+        
+        lf = lf.join(v3_pl, on="ID_LINEA", how="inner")
+        lf = lf.join(tar_pl, on="GT", how="left")
+        lf = lf.join(en_pl, on="DOMINIO", how="left")
+        
+        # 4. LÓGICA DE MES PARTIDO (Switch de Tarifa)
+        corte = datetime.strptime(fecha_corte, "%Y-%m-%d").date()
+        lf = lf.with_columns(
+            pl.when(pl.col("FECHA") <= corte)
+            .then(pl.col("TARIFA_NOV"))
+            .otherwise(pl.col("TARIFA_FEB"))
+            .alias("TARIFA_PRACTICADA") # Esta es la tarifa "viva" según el día
+        )
+        
+        # 5. CÁLCULOS DE COMPENSACIÓN (RESTAURADOS)
+        # Forzamos a Float para operar
+        cols_calc = ["CANTIDAD_USOS", "DESCUENTO_X_INTEGRACION", "DEBITADO"]
+        lf = lf.with_columns([pl.col(c).cast(pl.Float64).fill_null(0) for c in cols_calc])
+        
+        lf = lf.with_columns([
+            (pl.col("DESCUENTO_X_INTEGRACION") * pl.col("CANTIDAD_USOS")).alias("COMP_ITG"),
+            pl.when(pl.col("CONTRATO").cast(pl.Utf8) == "621")
+              .then(
+                  pl.when(pl.col("GT") == "INP")
+                    .then((pl.col("DEBITADO") / 0.45) * 0.55 * pl.col("CANTIDAD_USOS"))
+                    .otherwise((pl.col("TARIFA_PRACTICADA") - pl.col("DEBITADO") - pl.col("DESCUENTO_X_INTEGRACION")) * pl.col("CANTIDAD_USOS"))
+              ).otherwise(0).alias("COMP_ATS")
+        ])
+        
+        # 6. Agrupación Final
+        final = lf.group_by(['GT', 'ID_LINEA', 'DOMINIO', 'ENERGIA']).agg([
+            pl.col('CANTIDAD_USOS').sum(),
+            pl.col('COMP_ITG').sum(),
+            pl.col('COMP_ATS').sum()
+        ]).collect().to_pandas()
+        
+        return final
     except Exception as e:
-        st.error(f"Error crítico en DMK: {e}")
+        st.error(f"Error en liquidación: {e}")
         return None
 
 # =============================================================================
-# INTERFAZ DE USUARIO
+# INTERFAZ (UI)
 # =============================================================================
 
-st.title("Fiscalización TTR Natalia v8.6")
+for k in ['v3', 'tarifas']:
+    if k not in st.session_state: st.session_state[k] = None
 
-if 'v3_pers' not in st.session_state: st.session_state.v3_pers = None
+st.title("🛡️ Fiscalización TTR Natalia v8.9")
+t1, t2, t3 = st.tabs(["💰 1. TARIFAS", "📋 2. NOMENCLADORES", "📂 3. PROCESO DMK"])
 
-t1, t2, t3 = st.tabs(["💰 TARIFAS", "📋 NOMENCLADORES", "📂 PROCESO DMK"])
+with t1:
+    st.header("1. Proyección de Tarifas")
+    f_nov = st.file_uploader("Cuadro Noviembre", key="tn")
+    if f_nov:
+        c = st.columns(5); m = {'1SCN': c[0].number_input("1SCN", 494.33), '2SCN': c[1].number_input("2SCN", 551.24), '3SCN': c[2].number_input("3SCN", 593.70), '4SCN': c[3].number_input("4SCN", 636.21), '5SCN': c[4].number_input("5SCN", 678.42)}
+        if st.button("📊 Calcular Tarifas Febrero"):
+            st.session_state.tarifas = motor_proyeccion_tarifas(pd.read_excel(f_nov), m)
+    if st.session_state.tarifas is not None: st.dataframe(st.session_state.tarifas)
 
 with t2:
-    st.header("Actualización de Nomenclador (Modo Espejo)")
-    col1, col2, col3 = st.columns(3)
-    f_v2 = col1.file_uploader("Nomenclador Molde (16 col)", key="v2")
-    f_elr = col2.file_uploader("ELR Febrero", key="elr")
-    f_ts = col3.file_uploader("TS Febrero", key="ts")
-    
-    if f_v2 and f_elr and f_ts and st.button("🔄 Ejecutar Actualización"):
-        v3, audit = motor_maestro_v8_6(pd.read_excel(f_v2), pd.read_excel(f_elr), pd.read_excel(f_ts))
-        st.session_state.v3_pers = v3
-        st.success(f"Proceso terminado. Filas: {len(v3)} | Columnas: {len(v3.columns)}")
-        st.dataframe(v3.head())
-        
-        # Descarga
-        buf = io.BytesIO()
-        v3.to_excel(buf, index=False)
-        st.download_button("📥 Descargar Nomenclador V3 Limpio", buf.getvalue(), "Nomenclador_V3_Final.xlsx")
+    st.header("2. Sincronización Maestro (16 Col)")
+    f_v2 = st.file_uploader("Nomenclador Molde"); f_elr = st.file_uploader("ELR Febrero")
+    if f_v2 and f_elr and st.button("🔄 Actualizar"):
+        st.session_state.v3 = motor_maestro_v8_9(pd.read_excel(f_v2), pd.read_excel(f_elr))
+        st.success("V3 actualizado.")
 
 with t3:
-    if st.session_state.v3_pers is not None:
-        st.header("Liquidación con Mes Partido")
-        corte = st.date_input("Fecha de cambio de tarifa (inclusive)", datetime(2026, 2, 14))
-        f_dmk = st.file_uploader("Archivo DMK", key="dmk")
-        f_en = st.file_uploader("Energías", key="en")
-        
-        if f_dmk and f_en and st.button("⚡ Procesar"):
-            res = motor_dmk_v8_6(f_dmk, st.session_state.v3_pers, pd.read_excel(f_en), str(corte))
+    st.header("3. Liquidación con Tarifas Dinámicas")
+    if st.session_state.v3 is not None and st.session_state.tarifas is not None:
+        corte_dt = st.date_input("Fecha de cambio (inclusive):", datetime(2026, 2, 14))
+        f_dmk = st.file_uploader("Archivo DMK"); f_en = st.file_uploader("Energías")
+        if f_dmk and f_en and st.button("⚡ GENERAR LIQUIDACIÓN"):
+            res = motor_dmk_v8_9(f_dmk, st.session_state.v3, st.session_state.tarifas, str(corte_dt), pd.read_excel(f_en))
             if res is not None:
                 st.dataframe(res.head())
+                buf = io.BytesIO(); res.to_excel(buf, index=False)
+                st.download_button("📥 Descargar Liquidación Final", buf.getvalue(), "Liquidacion_TTR_Feb26.xlsx")
     else:
-        st.warning("Primero generá el Nomenclador V3 en la pestaña anterior.")
+        st.warning("⚠️ Primero calculá Tarifas y Nomenclador.")
