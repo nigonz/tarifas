@@ -25,6 +25,41 @@ def formatear_ids(df, columnas_id):
             df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.upper()
     return df
 
+ef motor_tarifas_v8(df_base, manuales):
+    df = blindar_nombres(df_base.copy())
+    col_id = [c for c in df.columns if 'ID' in c][0]
+    for col in ['LIMITE_INFERIOR', 'LIMITE_SUPERIOR']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.'), errors='coerce')
+    
+    v1_ant = df.loc[df[col_id] == '1SCN', 'LIMITE_INFERIOR'].values[0]
+    factor = manuales['1SCN'] / v1_ant
+    
+    res = []
+    for _, row in df.iterrows():
+        id_t = str(row[col_id]).strip().upper()
+        v_min_ant, v_max_ant = row['LIMITE_INFERIOR'], row['LIMITE_SUPERIOR']
+        
+        if id_t in manuales: v_min = v_max = manuales[id_t]
+        elif 'SEN' in id_t and 'SESN' not in id_t: v_min = v_max = manuales.get(id_t.replace('SEN', 'SCN'), manuales['1SCN']) * 1.25
+        elif 'SEAN' in id_t and 'SEASN' not in id_t: v_min = v_max = manuales.get(id_t.replace('SEAN', 'SCN'), manuales['1SCN']) * 1.75
+        elif 'SCSN' in id_t: v_min = v_max = manuales.get(id_t.replace('SCSN', 'SCN'), manuales['1SCN']) * 1.59
+        elif 'SESN' in id_t: v_min = v_max = (manuales.get(id_t.replace('SESN', 'SCN'), manuales['1SCN']) * 1.59) * 1.25
+        elif 'SEASN' in id_t: v_min = v_max = (manuales.get(id_t.replace('SEASN', 'SCN'), manuales['1SCN']) * 1.59) * 1.75
+        else: v_min, v_max = v_min_ant * factor, v_max_ant * factor
+
+        res.append({
+            'ID': id_t, 'ANTERIOR': round(v_min_ant, 2), 'NUEVO': round(v_min, 2),
+            'VAR_%': round(((v_min/v_min_ant)-1)*100, 2) if v_min_ant > 0 else 0,
+            'LIMITE_SUPERIOR': round(v_max, 2)
+        })
+    return pd.DataFrame(res)
+def motor_maestro_v8_6(df_v2, df_elr, df_ts):
+    # 1. Guardar el molde original (Nombres de columnas y orden exacto)
+    columnas_originales = df_v2.columns.tolist()
+    ids_originales = df_v2[df_v2.columns[0]].astype(str).str.strip().str.upper().tolist()
+
+
 # =============================================================================
 # BLOQUE 1: MOTOR MAESTRO (FIX 16 COLUMNAS / 443 FILAS)
 # =============================================================================
