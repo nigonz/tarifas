@@ -25,7 +25,7 @@ def formatear_ids(df, columnas_id):
             df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.upper()
     return df
 
-ef motor_tarifas_v8(df_base, manuales):
+def motor_tarifas_v8(df_base, manuales):
     df = blindar_nombres(df_base.copy())
     col_id = [c for c in df.columns if 'ID' in c][0]
     for col in ['LIMITE_INFERIOR', 'LIMITE_SUPERIOR']:
