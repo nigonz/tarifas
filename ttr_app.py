@@ -150,7 +150,7 @@ def motor_dmk_v9_8(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
 for k in ['v3', 'ts', 'tarifas', 'res_dmk']:
     if k not in st.session_state: st.session_state[k] = None
 
-st.title("🛡️ Fiscalización TTR Natalia v9.8")
+st.title("🛡️ Fiscalización TTR v9.8")
 tabs = st.tabs(["💰 1. TARIFAS", "📋 2. NOMENCLADORES", "📂 3. PROCESO DMK"])
 
 with tabs[0]:
