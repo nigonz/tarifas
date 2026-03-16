@@ -46,98 +46,123 @@ def motor_proyeccion_tarifas(df_nov, manuales):
         res.append({'GT': id_t, 'TARIFA_NOV': round(v_ant, 2), 'TARIFA_FEB': round(v_nue, 2)})
     return pd.DataFrame(res)
 
-def motor_maestro_v9_2(df_v2, df_elr, df_ts):
-    """Actualiza Nomenclador V3 (16 col) y TS (Ramales) usando el ELR."""
-    # 1. Preparar Moldes
-    cols_v3_org = df_v2.columns.tolist()
-    ids_v3_org = df_v2[df_v2.columns[0]].astype(str).str.strip().str.upper().tolist()
+def motor_maestro_profundo_v9_5(df_v3_maestro, df_ts_maestro, df_elr_nuevo):
+    """
+    Replica el proceso de las filas amarillas: 
+    1. Identifica qué hay de nuevo en el ELR.
+    2. Lo agrega al Nomenclador y al TS.
+    3. Actualiza los GT de lo que ya existía.
+    """
+    # Guardar moldes de columnas originales (respetando espacios y orden)
+    cols_v3_org = df_v3_maestro.columns.tolist()
+    cols_ts_org = df_ts_maestro.columns.tolist()
     
-    # 2. Normalización Interna
-    v2_i = blindar_nombres(df_v2.copy())
-    elr_i = blindar_nombres(df_elr.copy())
-    ts_i = blindar_nombres(df_ts.copy())
+    # Normalización para trabajar internamente
+    v3_i = blindar_nombres(df_v3_maestro.copy())
+    ts_i = blindar_nombres(df_ts_maestro.copy())
+    elr_i = blindar_nombres(df_elr_nuevo.copy())
     
-    # Identificar Llaves Dinámicamente
+    # Identificación de llaves (ID_LINEA y ID_RAMAL)
     id_l_elr = [c for c in elr_i.columns if 'ID_LINEA_BO' in c or 'ID' in c][0]
     id_r_elr = [c for c in elr_i.columns if 'ID_RAMAL_BO' in c or 'RAMAL' in c][0]
-    
+    id_l_v3 = v3_i.columns[0]
     id_l_ts = [c for c in ts_i.columns if 'IDLINEANS' in c or 'ID_LINEA' in c][0]
     id_r_ts = [c for c in ts_i.columns if 'IDRAMALNS' in c or 'ID_RAMAL' in c][0]
-    
-    id_l_v2 = v2_i.columns[0]
-    col_gt_elr = [c for c in elr_i.columns if 'GRUPO_TARIF' in c][0]
-    col_nom_elr = [c for c in elr_i.columns if 'LINEA' in c and 'ID' not in c and 'BO' not in c][0]
 
-    # Formatear IDs para el cruce
     elr_i = formatear_ids(elr_i, [id_l_elr, id_r_elr])
+    v3_i = formatear_ids(v3_i, [id_l_v3])
     ts_i = formatear_ids(ts_i, [id_l_ts, id_r_ts])
-    v2_i = formatear_ids(v2_i, [id_l_v2])
 
-    # --- PARTE A: ACTUALIZACIÓN TS (RAMAL POR RAMAL) ---
+    # 1. ACTUALIZACIÓN NOMENCLADOR V3 (LÍNEAS)
+    # ---------------------------------------------------------
+    # Mapeo de datos del ELR para líneas únicas
+    elr_lin = elr_i.drop_duplicates(subset=[id_l_elr])
     
-    elr_ramal_map = elr_i[[id_l_elr, id_r_elr, col_gt_elr, col_nom_elr]].drop_duplicates()
-    ts_upd = ts_i.merge(elr_ramal_map, left_on=[id_l_ts, id_r_ts], right_on=[id_l_elr, id_r_elr], how='left')
+    # Identificar NUEVAS LÍNEAS (Las "filas amarillas" que no están en V3)
+    ids_en_v3 = set(v3_i[id_l_v3])
+    nuevas_lineas = elr_lin[~elr_lin[id_l_elr].isin(ids_en_v3)].copy()
     
-    # --- PARTE B: ACTUALIZACIÓN V3 (MOLDE 16 COLUMNAS) ---
-    elr_linea_map = elr_i[[id_l_elr, col_gt_elr, col_nom_elr]].drop_duplicates(subset=[id_l_elr])
-    v3_upd = v2_i.merge(elr_linea_map, left_on=id_l_v2, right_on=id_l_elr, how='left')
-    
-    # Pisar GT y Limpiar Estructura
-    v3_upd['GT'] = v3_upd[col_gt_elr].fillna(v3_upd['GT'])
-    v3_upd = v3_upd[v3_upd[id_l_v2].isin(ids_v3_org)] # Solo las 443 líneas
-    v3_upd = v3_upd[v2_i.columns] # Solo las columnas del molde
-    v3_upd.columns = cols_v3_org # Restaurar nombres originales
-    
-    return v3_upd, ts_upd
+    # Si hay nuevas, las preparamos para el "APPEND"
+    if not nuevas_lineas.empty:
+        nuevas_v3 = pd.DataFrame(columns=v3_i.columns)
+        nuevas_v3[id_l_v3] = nuevas_lineas[id_l_elr]
+        nuevas_v3['RAZON_SOCIAL'] = nuevas_lineas['NOMBRE_EMPRESA']
+        nuevas_v3['CUIT'] = nuevas_lineas['CUIT']
+        nuevas_v3['JURIS'] = nuevas_lineas['JURISDICCION']
+        nuevas_v3['GT'] = nuevas_lineas['GRUPO_TARIFARIO_LINEA_DNGFF']
+        nuevas_v3['OBSERVACION'] = "NUEVA ALTA DETECTADA EN ELR"
+        v3_i = pd.concat([v3_i, nuevas_v3], ignore_index=True)
 
+    # Actualizar GT de las existentes
+    v3_i = v3_i.merge(elr_lin[[id_l_elr, 'GRUPO_TARIFARIO_LINEA_DNGFF']], left_on=id_l_v3, right_on=id_l_elr, how='left')
+    v3_i['GT'] = v3_i['GRUPO_TARIFARIO_LINEA_DNGFF'].fillna(v3_i['GT'])
+    v3_final = v3_i[cols_v3_org] # Volver a las 16 columnas originales
+    v3_final.columns = cols_v3_org # Restaurar nombres con espacios
+
+    # 2. ACTUALIZACIÓN TS (RAMALES)
+    # ---------------------------------------------------------
+    # Identificar NUEVOS RAMALES
+    ts_i['LLAVE'] = ts_i[id_l_ts] + "_" + ts_i[id_r_ts]
+    elr_i['LLAVE'] = elr_i[id_l_elr] + "_" + elr_i[id_r_elr]
+    
+    ids_en_ts = set(ts_i['LLAVE'])
+    nuevos_ramales = elr_i[~elr_i['LLAVE'].isin(ids_en_ts)].copy()
+    
+    if not nuevos_ramales.empty:
+        nuevos_ts = pd.DataFrame(columns=ts_i.columns)
+        nuevos_ts[id_l_ts] = nuevos_ramales[id_l_elr]
+        nuevos_ts[id_r_ts] = nuevos_ramales[id_r_elr]
+        nuevos_ts['GT'] = nuevos_ramales['GRUPO_TARIFARIO_LINEA_DNGFF']
+        nuevos_ts['JURISDICCION'] = nuevos_ramales['JURISDICCION']
+        nuevos_ts['OBSERVACION'] = "NUEVO RAMAL DETECTADO"
+        ts_i = pd.concat([ts_i, nuevos_ts], ignore_index=True)
+
+    # Actualizar GT y limpiar
+    ts_i = ts_i.merge(elr_i[['LLAVE', 'GRUPO_TARIFARIO_LINEA_DNGFF']], on='LLAVE', how='left')
+    ts_i['GT'] = ts_i['GRUPO_TARIFARIO_LINEA_DNGFF'].fillna(ts_i['GT'])
+    ts_final = ts_i[cols_ts_org] # Volver a las 9 columnas originales
+    ts_final.columns = cols_ts_org
+    
+    return v3_final, ts_final
 # =============================================================================
 # BLOQUE 2: MOTOR DMK (LIQUIDACIÓN CON FIX DE TARIFAS)
 # =============================================================================
 
-def motor_dmk_v9_1(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
+def motor_dmk_v9_5(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
     try:
-        # 1. Lectura segura (Polars)
         data = f_dmk.getvalue() if not f_dmk.name.endswith('.zip') else zipfile.ZipFile(f_dmk).read(zipfile.ZipFile(f_dmk).namelist()[0])
-        lf = pl.read_csv(io.BytesIO(data), encoding='iso-8859-1', separator=";", infer_schema_length=0).lazy()
+        # Fix LM622: Lectura como texto puro
+        lf = pl.read_csv(io.BytesIO(data), separator=";", infer_schema_length=0, encoding='iso-8859-1').lazy()
         
-        # 2. Normalización de DMK
         lf = lf.rename({c: c.strip().upper().replace(" ", "_") for c in lf.collect_schema().names()})
         lf = lf.with_columns([
             pl.col("ID_LINEA").str.replace(r"\.0$", "").str.strip_chars().str.to_uppercase(),
             pl.col("FECHA").str.to_date("%d/%m/%Y")
         ])
         
-        # 3. Joins con Normalización de GT (Evita que la tarifa sea 0)
+        # Cruzar con V3 y Tarifas
         v3_pl = pl.from_pandas(formatear_ids(df_v3.copy(), [df_v3.columns[0]])).lazy()
         v3_pl = v3_pl.rename({df_v3.columns[0]: "ID_LINEA"})
-        v3_pl = v3_pl.with_columns(pl.col("GT").str.strip_chars().str.to_uppercase()) # Normalizar GT en V3
-        
         tar_pl = pl.from_pandas(df_tarifas).lazy()
-        tar_pl = tar_pl.with_columns(pl.col("GT").str.strip_chars().str.to_uppercase()) # Normalizar GT en Tarifas
-        
         en_pl = pl.from_pandas(blindar_nombres(df_en)).lazy()
-        en_pl = en_pl.with_columns(pl.col("DOMINIO").str.strip_chars().str.to_uppercase())
         
         lf = lf.join(v3_pl, on="ID_LINEA", how="inner").join(tar_pl, on="GT", how="left").join(en_pl, on="DOMINIO", how="left")
         
-        # 4. Mes Partido
+        # Switch de Tarifa por Fecha
         corte = datetime.strptime(fecha_corte, "%Y-%m-%d").date()
         lf = lf.with_columns(pl.when(pl.col("FECHA") <= corte).then(pl.col("TARIFA_NOV")).otherwise(pl.col("TARIFA_FEB")).alias("TARIFA_PRACTICADA"))
         
-        # 5. Cálculos (Convertir a Float para evitar errores)
-        cols_calc = ["CANTIDAD_USOS", "DESCUENTO_X_INTEGRACION", "DEBITADO"]
-        lf = lf.with_columns([pl.col(c).cast(pl.Float64).fill_null(0) for c in cols_calc])
-        
+        # Cálculos de Compensación
+        lf = lf.with_columns([pl.col(c).cast(pl.Float64).fill_null(0) for c in ["CANTIDAD_USOS", "DESCUENTO_X_INTEGRACION", "DEBITADO"]])
         lf = lf.with_columns([
             (pl.col("DESCUENTO_X_INTEGRACION") * pl.col("CANTIDAD_USOS")).alias("COMP_ITG"),
             pl.when(pl.col("CONTRATO").cast(pl.Utf8) == "621")
               .then(pl.when(pl.col("GT") == "INP").then((pl.col("DEBITADO") / 0.45) * 0.55 * pl.col("CANTIDAD_USOS")).otherwise((pl.col("TARIFA_PRACTICADA") - pl.col("DEBITADO") - pl.col("DESCUENTO_X_INTEGRACION")) * pl.col("CANTIDAD_USOS")))
               .otherwise(0).alias("COMP_ATS")
         ])
-        
         return lf.group_by(['GT', 'ID_LINEA', 'DOMINIO', 'ENERGIA']).agg([pl.col('CANTIDAD_USOS').sum(), pl.col('COMP_ITG').sum(), pl.col('COMP_ATS').sum()]).collect().to_pandas()
     except Exception as e:
-        st.error(f"Error en liquidación: {e}")
+        st.error(f"Error: {e}")
         return None
 
 # =============================================================================
@@ -164,36 +189,33 @@ for k in ['v3_final', 'ts_final', 'tarifas_proy', 'res_dmk']:
 st.title("🛡️ Sistema de Fiscalización v9.2")
 t1, t2, t3 = st.tabs(["💰 1. TARIFAS", "📋 2. NOMENCLADORES", "📂 3. PROCESO DMK"])
 
-with t2:
-    st.header("Sincronización de Nomenclador y Ramales (TS)")
-    c1, c2, c3 = st.columns(3)
-    f_v2 = c1.file_uploader("Nomenclador Molde (V3)", key="uv3")
-    f_elr = c2.file_uploader("ELR Febrero", key="uelr")
-    f_ts = c3.file_uploader("Archivo TS (Ramales)", key="uts")
-    
-    if f_v2 and f_elr and f_ts and st.button("🔄 EJECUTAR ACTUALIZACIÓN MAESTRA"):
-        v3_res, ts_res = motor_maestro_v9_2(pd.read_excel(f_v2), pd.read_excel(f_elr), pd.read_excel(f_ts))
-        st.session_state.v3_final = v3_res
-        st.session_state.ts_final = ts_res
-        st.success("✅ Actualización completada.")
+st.title("🛡️ Fiscalización TTR Natalia v9.5")
 
-    # MOSTRAR BOTONES DE DESCARGA (Persistentes)
-    if st.session_state.v3_final is not None:
+if 'v3' not in st.session_state: st.session_state.v3 = None
+if 'ts' not in st.session_state: st.session_state.ts = None
+if 'tarifas' not in st.session_state: st.session_state.tarifas = None
+
+t1, t2, t3 = st.tabs(["💰 1. TARIFAS", "📋 2. NOMENCLADORES", "📂 3. PROCESO DMK"])
+
+with t2:
+    st.header("Actualización Inteligente (V3 + TS)")
+    c1, c2, c3 = st.columns(3)
+    f_v3 = c1.file_uploader("Nomenclador V3 (Molde 16 col)")
+    f_ts = c2.file_uploader("Nomenclador TS (Molde 9 col)")
+    f_elr = c3.file_uploader("ELR Febrero (Nuevo)")
+    
+    if f_v3 and f_ts and f_elr and st.button("🔄 SINCRONIZAR Y REGISTRAR ALTAS"):
+        v3_res, ts_res = motor_maestro_profundo_v9_5(pd.read_excel(f_v3), pd.read_excel(f_ts), pd.read_excel(f_elr))
+        st.session_state.v3, st.session_state.ts = v3_res, ts_res
+        st.success(f"¡Sincronización terminada! Líneas finales: {len(v3_res)}")
+    
+    if st.session_state.v3 is not None:
         st.divider()
-        st.subheader("📥 Descargar Archivos Actualizados")
-        col_dl1, col_dl2 = st.columns(2)
-        
-        # Botón Nomenclador V3
-        buf_v3 = io.BytesIO()
-        st.session_state.v3_final.to_excel(buf_v3, index=False)
-        col_dl1.download_button("📂 Bajar Nomenclador V3 (16 col)", buf_v3.getvalue(), "Nomenclador_V3_Feb.xlsx", key="dl_v3")
-        
-        # Botón TS
-        buf_ts = io.BytesIO()
-        st.session_state.ts_final.to_excel(buf_ts, index=False)
-        col_dl2.download_button("📂 Bajar TS Actualizado", buf_ts.getvalue(), "TS_Actualizado_Feb.xlsx", key="dl_ts")
-        
-        st.dataframe(st.session_state.v3_final.head(10))
+        col_d1, col_d2 = st.columns(2)
+        buf_v3 = io.BytesIO(); st.session_state.v3.to_excel(buf_v3, index=False)
+        col_d1.download_button("📥 Bajar Nomenclador V3 Actualizado", buf_v3.getvalue(), "Nomenclador_V3_Final.xlsx")
+        buf_ts = io.BytesIO(); st.session_state.ts.to_excel(buf_ts, index=False)
+        col_d2.download_button("📥 Bajar TS Actualizado", buf_ts.getvalue(), "TS_Final.xlsx")
 
 with t3:
     st.header("3. Liquidación con Persistencia")
