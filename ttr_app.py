@@ -6,7 +6,7 @@ import zipfile
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Fiscalización TTR Natalia v9.0", layout="wide")
+st.set_page_config(page_title="Fiscalización TTR Natalia v9.1", layout="wide")
 
 # =============================================================================
 # BLOQUE 0: UTILIDADES
@@ -47,7 +47,7 @@ def motor_proyeccion_tarifas(df_nov, manuales):
         res.append({'GT': id_t, 'TARIFA_NOV': round(v_ant, 2), 'TARIFA_FEB': round(v_nue, 2)})
     return pd.DataFrame(res)
 
-def motor_maestro_v9_0(df_v2, df_elr):
+def motor_maestro_v9_1(df_v2, df_elr):
     cols_org = df_v2.columns.tolist()
     ids_org = df_v2[df_v2.columns[0]].astype(str).str.strip().str.upper().tolist()
     df_v2_i, df_elr_i = blindar_nombres(df_v2.copy()), blindar_nombres(df_elr.copy())
@@ -63,38 +63,40 @@ def motor_maestro_v9_0(df_v2, df_elr):
     return v3
 
 # =============================================================================
-# BLOQUE 2: MOTOR DMK (LIQUIDACIÓN COMPLETA)
+# BLOQUE 2: MOTOR DMK (LIQUIDACIÓN CON FIX DE TARIFAS)
 # =============================================================================
 
-def motor_dmk_v9_0(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
+def motor_dmk_v9_1(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
     try:
-        # Lectura segura con Polars (Fix LM622)
-        if f_dmk.name.endswith('.zip'):
-            with zipfile.ZipFile(f_dmk) as z:
-                csv_f = [n for n in z.namelist() if n.endswith('.csv')][0]
-                with z.open(csv_f) as f: data = f.read()
-        else: data = f_dmk.getvalue()
-        
+        # 1. Lectura segura (Polars)
+        data = f_dmk.getvalue() if not f_dmk.name.endswith('.zip') else zipfile.ZipFile(f_dmk).read(zipfile.ZipFile(f_dmk).namelist()[0])
         lf = pl.read_csv(io.BytesIO(data), encoding='iso-8859-1', separator=";", infer_schema_length=0).lazy()
+        
+        # 2. Normalización de DMK
         lf = lf.rename({c: c.strip().upper().replace(" ", "_") for c in lf.collect_schema().names()})
         lf = lf.with_columns([
             pl.col("ID_LINEA").str.replace(r"\.0$", "").str.strip_chars().str.to_uppercase(),
             pl.col("FECHA").str.to_date("%d/%m/%Y")
         ])
         
-        # Joins
+        # 3. Joins con Normalización de GT (Evita que la tarifa sea 0)
         v3_pl = pl.from_pandas(formatear_ids(df_v3.copy(), [df_v3.columns[0]])).lazy()
         v3_pl = v3_pl.rename({df_v3.columns[0]: "ID_LINEA"})
+        v3_pl = v3_pl.with_columns(pl.col("GT").str.strip_chars().str.to_uppercase()) # Normalizar GT en V3
+        
         tar_pl = pl.from_pandas(df_tarifas).lazy()
+        tar_pl = tar_pl.with_columns(pl.col("GT").str.strip_chars().str.to_uppercase()) # Normalizar GT en Tarifas
+        
         en_pl = pl.from_pandas(blindar_nombres(df_en)).lazy()
+        en_pl = en_pl.with_columns(pl.col("DOMINIO").str.strip_chars().str.to_uppercase())
         
         lf = lf.join(v3_pl, on="ID_LINEA", how="inner").join(tar_pl, on="GT", how="left").join(en_pl, on="DOMINIO", how="left")
         
-        # Lógica Mes Partido
+        # 4. Mes Partido
         corte = datetime.strptime(fecha_corte, "%Y-%m-%d").date()
         lf = lf.with_columns(pl.when(pl.col("FECHA") <= corte).then(pl.col("TARIFA_NOV")).otherwise(pl.col("TARIFA_FEB")).alias("TARIFA_PRACTICADA"))
         
-        # Cálculos
+        # 5. Cálculos (Convertir a Float para evitar errores)
         cols_calc = ["CANTIDAD_USOS", "DESCUENTO_X_INTEGRACION", "DEBITADO"]
         lf = lf.with_columns([pl.col(c).cast(pl.Float64).fill_null(0) for c in cols_calc])
         
@@ -117,7 +119,7 @@ def motor_dmk_v9_0(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
 for k in ['v3', 'tarifas', 'res_dmk']:
     if k not in st.session_state: st.session_state[k] = None
 
-st.title("🛡️ Fiscalización TTR Natalia v9.0")
+st.title("🛡️ Fiscalización TTR Natalia v9.1")
 t1, t2, t3 = st.tabs(["💰 1. TARIFAS", "📋 2. NOMENCLADORES", "📂 3. PROCESO DMK"])
 
 with t1:
@@ -132,7 +134,7 @@ with t2:
     st.header("2. Sincronización V3")
     f_v2 = st.file_uploader("Nomenclador Molde"); f_elr = st.file_uploader("ELR Febrero")
     if f_v2 and f_elr and st.button("🔄 Actualizar"):
-        st.session_state.v3 = motor_maestro_v9_0(pd.read_excel(f_v2), pd.read_excel(f_elr))
+        st.session_state.v3 = motor_maestro_v9_1(pd.read_excel(f_v2), pd.read_excel(f_elr))
         st.success("¡V3 listo!")
 
 with t3:
@@ -142,12 +144,25 @@ with t3:
         f_dmk = st.file_uploader("DMK"); f_en = st.file_uploader("Energías")
         
         if f_dmk and f_en and st.button("⚡ GENERAR"):
-            st.session_state.res_dmk = motor_dmk_v9_0(f_dmk, st.session_state.v3, st.session_state.tarifas, str(corte_dt), pd.read_excel(f_en))
+            st.session_state.res_dmk = motor_dmk_v9_1(f_dmk, st.session_state.v3, st.session_state.tarifas, str(corte_dt), pd.read_excel(f_en))
         
         if st.session_state.res_dmk is not None:
-            st.success("Cálculo finalizado.")
-            st.dataframe(st.session_state.res_dmk.head())
-            buf = io.BytesIO(); st.session_state.res_dmk.to_excel(buf, index=False)
-            st.download_button("📥 Descargar Liquidación Final", buf.getvalue(), "Liquidacion_TTR_Final.xlsx", key="btn_dl")
+            # BOTÓN DE DESCARGA ARRIBA PARA QUE NO SE PIERDA
+            col_res1, col_res2 = st.columns([2, 1])
+            col_res1.success("✅ Liquidación calculada con éxito.")
+            
+            # Generar el Excel en memoria
+            buf = io.BytesIO()
+            st.session_state.res_dmk.to_excel(buf, index=False)
+            
+            col_res2.download_button(
+                label="📥 DESCARGAR RESULTADO FINAL",
+                data=buf.getvalue(),
+                file_name=f"Liquidacion_TTR_Final.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="btn_descarga_fijo"
+            )
+            
+            st.dataframe(st.session_state.res_dmk, use_container_width=True)
     else:
         st.warning("⚠️ Completá Tarifas y Nomenclador primero.")
