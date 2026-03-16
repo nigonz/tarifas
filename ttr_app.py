@@ -6,7 +6,7 @@ import zipfile
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Fiscalización TTR Natalia v9.8", layout="wide")
+st.set_page_config(page_title="Fiscalización TTR v9.8", layout="wide")
 
 # =============================================================================
 # BLOQUE 0: UTILIDADES DE DESCARGA Y LIMPIEZA
