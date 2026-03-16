@@ -16,7 +16,7 @@ def preparar_descarga(df):
     return output.getvalue()
 
 # =============================================================================
-# BLOQUE 1: MOTOR DE TARIFAS
+# BLOQUE 1: MOTOR DE TARIFAS (NOVEDADES)
 # =============================================================================
 
 def motor_tarifas_proyeccion(df_nov, manuales):
@@ -40,12 +40,12 @@ def motor_tarifas_proyeccion(df_nov, manuales):
     return pd.DataFrame(res)
 
 # =============================================================================
-# BLOQUE 2: MOTOR TTR (V13.7 - CORRECCIÓN DE SINTAXIS POLARS)
+# BLOQUE 2: MOTOR TTR (V13.9 - SIN COLUMNAS INNECESARIAS)
 # =============================================================================
 
-def procesar_dmk_v13_7(f_zip, df_v, df_tarifas, f_ener, f_corte):
+def procesar_dmk_v13_9(f_zip, df_v, df_tarifas, f_ener, f_corte):
     try:
-        # 1. CARGA BLINDADA (Todo como String)
+        # 1. CARGA DE DMK (Todo como Texto Puro)
         if f_zip.name.endswith('.zip'):
             with zipfile.ZipFile(f_zip) as z:
                 with z.open(z.namelist()[0]) as f:
@@ -53,13 +53,12 @@ def procesar_dmk_v13_7(f_zip, df_v, df_tarifas, f_ener, f_corte):
         else:
             lf = pl.read_csv(f_zip, separator=';', encoding='iso-8859-1', infer_schema_length=0).lazy()
 
-        # 2. SELECCIÓN DE COLUMNAS DEL NOMENCLADOR (ID_LINEA como llave)
-        v_pl = pl.from_pandas(df_v[['ID_LINEA', 'GT', 'PROVINCIA', 'MUNICIPIO', 'Linea SILAS DNGFF']]).lazy().select([
+        # 2. SELECCIÓN QUIRÚRGICA DEL NOMENCLADOR (Eliminamos Linea SILAS DNGFF)
+        v_pl = pl.from_pandas(df_v[['ID_LINEA', 'GT', 'PROVINCIA', 'MUNICIPIO']]).lazy().select([
             pl.col("ID_LINEA").cast(pl.Utf8).str.replace(r"\.0$", "").alias("ID_LINEA_KEY"),
             pl.col("GT").cast(pl.Utf8), 
             pl.col("PROVINCIA").cast(pl.Utf8), 
-            pl.col("MUNICIPIO").cast(pl.Utf8),
-            pl.col("Linea SILAS DNGFF").cast(pl.Utf8)
+            pl.col("MUNICIPIO").cast(pl.Utf8)
         ])
         
         tar_pl = pl.from_pandas(df_tarifas).lazy().with_columns(pl.col("GT").cast(pl.Utf8).alias("GT_TAR"))
@@ -69,17 +68,17 @@ def procesar_dmk_v13_7(f_zip, df_v, df_tarifas, f_ener, f_corte):
             pl.col("ENERGIA").cast(pl.Utf8).alias("ENERGIA_PM")
         ])
 
-        # 3. CRUCE DE DATOS (Usando strip_chars para corregir el error)
+        # 3. CRUCE DE DATOS
         lf = lf.with_columns(pl.col("ID_LINEA").cast(pl.Utf8).str.replace(r"\.0$", "").str.strip_chars())
         lf = lf.join(v_pl, left_on="ID_LINEA", right_on="ID_LINEA_KEY", how="inner")
         lf = lf.join(tar_pl, left_on="GT", right_on="GT_TAR", how="left")
 
-        # 4. REGLAS DE NEGOCIO (Tu Notebook)
+        # 4. REGLAS DE NEGOCIO (BE, CABA, TARIFA)
         corte_dt = datetime.strptime(f_corte, "%Y-%m-%d").date()
         
         lf = lf.with_columns([
             pl.col("FECHA").str.to_date("%d/%m/%Y").alias("FECHA_DT"),
-            pl.when(pl.col("CONTRATO").cast(pl.Utf8).is_in(["830", "831", "832", "833"])).then(pl.lit("SI")).otherwise(pl.lit("NO")).alias("BE"),
+            pl.when(pl.col("CONTRATO").is_in(["830", "831", "832", "833"])).then(pl.lit("SI")).otherwise(pl.lit("NO")).alias("BE"),
             pl.when(pl.col("GT") == "DF").then(pl.lit("CABA")).otherwise(pl.col("PROVINCIA")).alias("PROV_FINAL")
         ])
 
@@ -87,14 +86,14 @@ def procesar_dmk_v13_7(f_zip, df_v, df_tarifas, f_ener, f_corte):
             pl.when(pl.col("FECHA_DT") <= corte_dt).then(pl.col("TARIFA_NOV")).otherwise(pl.col("TARIFA_FEB")).alias("TARIFA_BASE_ITG_V")
         )
 
-        # 5. CÁLCULOS
+        # 5. CÁLCULOS (Conversión numérica solo al operar)
         cols_calc = ["TARIFA_BASE_ITG_V", "DEBITADO", "DESCUENTO_X_INTEGRACION", "CANTIDAD_USOS"]
         for c in cols_calc:
             lf = lf.with_columns(pl.col(c).cast(pl.Float64, strict=False).fill_null(0))
 
         lf = lf.with_columns([
             (pl.col("DESCUENTO_X_INTEGRACION") * pl.col("CANTIDAD_USOS")).alias("COMP_ITG"),
-            pl.when(pl.col("CONTRATO").cast(pl.Utf8) == "621")
+            pl.when(pl.col("CONTRATO") == "621")
               .then(
                   pl.when(pl.col("GT") == "INP")
                     .then((pl.col("DEBITADO") / 0.45 * 0.55) * pl.col("CANTIDAD_USOS"))
@@ -117,14 +116,15 @@ def procesar_dmk_v13_7(f_zip, df_v, df_tarifas, f_ener, f_corte):
         df_resto['DOMINIO'], df_resto['ENERGIA_PM'] = 'NO', "3"
         df_final = pd.concat([df_pm, df_resto], ignore_index=True)
 
-        agrupadores = ['PROV_FINAL', 'MUNICIPIO', 'ID_EMPRESA', 'GT', 'ID_LINEA', 'Linea SILAS DNGFF', 'RAMAL', 'DOMINIO', 'ENERGIA_PM', 'CONTRATO', 'BE', 'TARIFA_BASE_ITG_V', 'DEBITADO', 'DESCUENTO_X_INTEGRACION']
+        # Reporte final sin la columna conflictiva
+        agrupadores = ['PROV_FINAL', 'MUNICIPIO', 'ID_EMPRESA', 'GT', 'ID_LINEA', 'RAMAL', 'DOMINIO', 'ENERGIA_PM', 'CONTRATO', 'BE', 'TARIFA_BASE_ITG_V', 'DEBITADO', 'DESCUENTO_X_INTEGRACION']
         
         return df_final.groupby(agrupadores, as_index=False).agg({
             'CANTIDAD_USOS': 'sum', 'COMP_ITG': 'sum', 'COMP_ATS': 'sum', 'COMP_ATS_s_IVA': 'sum', 'COMP_ITG_s_IVA': 'sum'
         })
 
     except Exception as e:
-        st.error(f"Error técnico detectado: {e}")
+        st.error(f"Error técnico: {e}")
         return None
 
 # =============================================================================
@@ -133,35 +133,35 @@ def procesar_dmk_v13_7(f_zip, df_v, df_tarifas, f_ener, f_corte):
 
 st.title("🏛️ Sistema de Fiscalización TTR")
 
-if 'tar_v13' not in st.session_state: st.session_state.tar_v13 = None
-if 'ttr_v13' not in st.session_state: st.session_state.ttr_v13 = None
+if 'memo_tarifas' not in st.session_state: st.session_state.memo_tarifas = None
+if 'memo_ttr' not in st.session_state: st.session_state.memo_ttr = None
 
 tabs = st.tabs(["💰 1. TARIFAS", "⚡ 2. PROCESAR DMK"])
 
 with tabs[0]:
-    f_tar = st.file_uploader("Subir Cuadro Noviembre", key="up_tar_nov")
+    f_tar = st.file_uploader("Subir Cuadro Noviembre", key="up_tar_139")
     if f_tar:
         c = st.columns(5)
         m = {'1SCN': c[0].number_input("1SCN", 494.33), '2SCN': c[1].number_input("2SCN", 551.24), '3SCN': c[2].number_input("3SCN", 593.70), '4SCN': c[3].number_input("4SCN", 636.21), '5SCN': c[4].number_input("5SCN", 678.42)}
         if st.button("📊 Proyectar"):
-            st.session_state.tar_v13 = motor_tarifas_proyeccion(pd.read_excel(f_tar), m)
-    if st.session_state.tar_v13 is not None: st.dataframe(st.session_state.tar_v13)
+            st.session_state.memo_tarifas = motor_tarifas_proyeccion(pd.read_excel(f_tar), m)
+    if st.session_state.memo_tarifas is not None: st.dataframe(st.session_state.memo_tarifas)
 
 with tabs[1]:
-    if st.session_state.tar_v13 is not None:
+    if st.session_state.memo_tarifas is not None:
         ca, cb = st.columns(2)
-        fv = ca.file_uploader("Nomenclador V", key="up_v_v13")
-        fe = cb.file_uploader("Energías", key="up_e_v13")
-        fzip = st.file_uploader("DMK (ZIP/CSV)", key="up_z_v13")
+        fv = ca.file_uploader("Nomenclador V", key="up_v_139")
+        fe = cb.file_uploader("Energías", key="up_e_139")
+        fzip = st.file_uploader("DMK (ZIP/CSV)", key="up_z_139")
         dt_corte = st.date_input("Fecha Cambio de Tarifa:", datetime(2026, 2, 14))
         
         if fv and fe and fzip and st.button("🚀 INICIAR PROCESO TTR"):
-            with st.spinner("Ejecutando motor de liquidación..."):
-                st.session_state.ttr_v13 = procesar_dmk_v13_7(fzip, pd.read_excel(fv), st.session_state.tar_v13, fe, str(dt_corte))
+            with st.spinner("Procesando (Excluyendo columnas con basura)..."):
+                st.session_state.memo_ttr = procesar_dmk_v13_9(fzip, pd.read_excel(fv), st.session_state.memo_tarifas, fe, str(dt_corte))
             
-            if st.session_state.ttr_v13 is not None:
+            if st.session_state.memo_ttr is not None:
                 st.success("TTR Finalizado.")
-                st.download_button("📥 DESCARGAR RESULTADO", preparar_descarga(st.session_state.ttr_v13), "TTR_Liquidacion_Final.xlsx")
-                st.dataframe(st.session_state.ttr_v13.head(10))
+                st.download_button("📥 DESCARGAR RESULTADO", preparar_descarga(st.session_state.memo_ttr), "TTR_Final.xlsx")
+                st.dataframe(st.session_state.memo_ttr.head(10))
     else:
         st.warning("Configurá las tarifas primero.")
