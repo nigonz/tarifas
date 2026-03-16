@@ -8,10 +8,6 @@ from datetime import datetime
 # --- CONFIGURACIÓN DEL SISTEMA OFICIAL ---
 st.set_page_config(page_title="Sistema de Fiscalización TTR", layout="wide")
 
-# =============================================================================
-# BLOQUE 0: UTILIDADES (SIN CAMBIOS)
-# =============================================================================
-
 def preparar_descarga(df):
     if df is None: return None
     output = io.BytesIO()
@@ -20,7 +16,7 @@ def preparar_descarga(df):
     return output.getvalue()
 
 # =============================================================================
-# BLOQUE 1: MOTOR DE TARIFAS (TAL CUAL LO TENÍAS)
+# BLOQUE 1: MOTOR DE TARIFAS (SIN CAMBIOS)
 # =============================================================================
 
 def motor_tarifas_proyeccion(df_nov, manuales):
@@ -44,67 +40,68 @@ def motor_tarifas_proyeccion(df_nov, manuales):
     return pd.DataFrame(res)
 
 # =============================================================================
-# BLOQUE 2: MOTOR TTR (REPLICANDO TU NOTEBOOK CON ALTA VELOCIDAD)
+# BLOQUE 2: MOTOR DMK (V13.6 - SELECCIÓN QUIRÚRGICA SIN CONFLICTOS)
 # =============================================================================
 
-def procesar_dmk_final_blindado(f_dmk, df_v, df_tarifas, f_ener, f_corte):
+def procesar_dmk_v13_6(f_zip, df_v, df_tarifas, f_ener, f_corte):
     try:
-        # 1. LECTURA EFICIENTE (Evita caídas de página)
-        if f_dmk.name.endswith('.zip'):
-            with zipfile.ZipFile(f_dmk) as z:
+        # 1. CARGA DE DMK (Trata todo como texto para evitar errores de tipo)
+        if f_zip.name.endswith('.zip'):
+            with zipfile.ZipFile(f_zip) as z:
                 with z.open(z.namelist()[0]) as f:
-                    # Leemos como Polars directamente (mucho más rápido)
                     lf = pl.read_csv(f.read(), separator=';', encoding='iso-8859-1', infer_schema_length=0).lazy()
         else:
-            lf = pl.read_csv(f_dmk, separator=';', encoding='iso-8859-1', infer_schema_length=0).lazy()
+            lf = pl.read_csv(f_zip, separator=';', encoding='iso-8859-1', infer_schema_length=0).lazy()
 
-        # 2. LIMPIEZA DE MAESTROS
-        v_pl = pl.from_pandas(df_v).lazy().select([
-            pl.col(df_v.columns[0]).cast(pl.Utf8).str.replace(r"\.0$", "").alias("ID_LINEA"),
-            pl.col("GT"), pl.col("Linea SILAS DNGFF"), pl.col("PROVINCIA"), pl.col("MUNICIPIO")
+        # 2. SELECCIÓN ESTRICTA DEL NOMENCLADOR (Eliminamos la columna con 'LM622')
+        # Solo tomamos ID_LINEA para el cruce y lo que se usa en las fórmulas
+        cols_v = ['ID_LINEA', 'GT', 'PROVINCIA', 'MUNICIPIO']
+        v_pl = pl.from_pandas(df_v[cols_v]).lazy().select([
+            pl.col("ID_LINEA").cast(pl.Utf8).str.replace(r"\.0$", "").alias("ID_LINEA_KEY"),
+            pl.col("GT").cast(pl.Utf8), 
+            pl.col("PROVINCIA").cast(pl.Utf8), 
+            pl.col("MUNICIPIO").cast(pl.Utf8)
         ])
         
-        tar_pl = pl.from_pandas(df_tarifas).lazy().rename({"GT": "GT_TAR"})
+        tar_pl = pl.from_pandas(df_tarifas).lazy().with_columns(pl.col("GT").cast(pl.Utf8).alias("GT_TAR"))
+        
         pme_pl = pl.from_pandas(pd.read_excel(f_ener)).lazy().select([
-            pl.col("DOMINIO").str.strip().str.upper(),
-            pl.col("ENERGIA").cast(pl.Int64)
+            pl.col("DOMINIO").cast(pl.Utf8).str.strip().str.upper(),
+            pl.col("ENERGIA").cast(pl.Utf8).alias("ENERGIA_PM")
         ])
 
-        # 3. PROCESO DE CRUCE (Tu lógica de Notebook)
-        # Inner join con Nomenclador V
-        lf = lf.with_columns(pl.col("ID_LINEA").str.replace(r"\.0$", "").str.strip())
-        lf = lf.join(v_pl, on="ID_LINEA", how="inner")
-        
-        # Join con Tarifas
+        # 3. CRUCE DE DATOS POR ID_LINEA
+        lf = lf.with_columns(pl.col("ID_LINEA").cast(pl.Utf8).str.replace(r"\.0$", "").str.strip())
+        lf = lf.join(v_pl, left_on="ID_LINEA", right_on="ID_LINEA_KEY", how="inner")
         lf = lf.join(tar_pl, left_on="GT", right_on="GT_TAR", how="left")
 
-        # 4. REGLAS DE NEGOCIO Y CÁLCULOS
+        # 4. REGLAS DE NEGOCIO (Tu Notebook)
         corte_dt = datetime.strptime(f_corte, "%Y-%m-%d").date()
         
         lf = lf.with_columns([
-            # Clasificación de Tarifa por Fecha
             pl.col("FECHA").str.to_date("%d/%m/%Y").alias("FECHA_DT"),
             # Flag BE (830-833)
-            pl.when(pl.col("CONTRATO").cast(pl.Int64).is_in([830, 831, 832, 833])).then(pl.lit("SI")).otherwise(pl.lit("NO")).alias("BE"),
-            # DF a CABA
+            pl.when(pl.col("CONTRATO").cast(pl.Utf8).is_in(["830", "831", "832", "833"])).then(pl.lit("SI")).otherwise(pl.lit("NO")).alias("BE"),
+            # Forzar CABA para GT DF
             pl.when(pl.col("GT") == "DF").then(pl.lit("CABA")).otherwise(pl.col("PROVINCIA")).alias("PROV_FINAL")
         ])
 
         lf = lf.with_columns(
-            pl.when(pl.col("FECHA_DT") <= corte_dt).then(pl.col("TARIFA_NOV")).otherwise(pl.col("TARIFA_FEB")).alias("TARIFA_BASE_ITG")
+            pl.when(pl.col("FECHA_DT") <= corte_dt).then(pl.col("TARIFA_NOV")).otherwise(pl.col("TARIFA_FEB")).alias("TARIFA_BASE_ITG_V")
         )
 
-        # 5. FÓRMULAS DE COMPENSACIÓN (Exactas de tu script)
-        for col in ['TARIFA_BASE_ITG', 'DEBITADO', 'DESCUENTO_X_INTEGRACION', 'CANTIDAD_USOS']:
-            lf = lf.with_columns(pl.col(col).cast(pl.Float64).fill_null(0))
+        # 5. CÁLCULOS
+        cols_calc = ["TARIFA_BASE_ITG_V", "DEBITADO", "DESCUENTO_X_INTEGRACION", "CANTIDAD_USOS"]
+        for c in cols_calc:
+            lf = lf.with_columns(pl.col(c).cast(pl.Float64, strict=False).fill_null(0))
 
         lf = lf.with_columns([
             (pl.col("DESCUENTO_X_INTEGRACION") * pl.col("CANTIDAD_USOS")).alias("COMP_ITG"),
-            pl.when(pl.col("CONTRATO").cast(pl.Int64) == 621)
+            pl.when(pl.col("CONTRATO").cast(pl.Utf8) == "621")
               .then(
                   pl.when(pl.col("GT") == "INP")
                     .then((pl.col("DEBITADO") / 0.45 * 0.55) * pl.col("CANTIDAD_USOS"))
-                    .otherwise((pl.col("TARIFA_BASE_ITG") - pl.col("DEBITADO") - pl.col("DESCUENTO_X_INTEGRACION")) * pl.col("CANTIDAD_USOS"))
+                    .otherwise((pl.col("TARIFA_BASE_ITG_V") - pl.col("DEBITADO") - pl.col("DESCUENTO_X_INTEGRACION")) * pl.col("CANTIDAD_USOS"))
               ).otherwise(0).alias("COMP_ATS")
         ])
 
@@ -114,67 +111,62 @@ def procesar_dmk_final_blindado(f_dmk, df_v, df_tarifas, f_ener, f_corte):
             (pl.col("COMP_ITG") / 1.105).alias("COMP_ITG_s_IVA")
         ])
 
-        # 6. AGRUPACIÓN Y ENERGÍAS
+        # 6. ENERGÍAS Y AGRUPACIÓN
         df_res = lf.collect().to_pandas()
+        pme_data = pme_pl.collect().to_pandas()
         
-        # Cruce con Energías
-        pme_df = pme_pl.collect().to_pandas()
-        df_pm = df_res[df_res['DOMINIO'].isin(pme_df['DOMINIO'])].merge(pme_df, on='DOMINIO', how='left')
-        df_resto = df_res[~df_res['DOMINIO'].isin(pme_df['DOMINIO'])].copy()
+        df_pm = df_res[df_res['DOMINIO'].isin(pme_data['DOMINIO'])].merge(pme_data, on='DOMINIO', how='left')
+        df_resto = df_res[~df_res['DOMINIO'].isin(pme_data['DOMINIO'])].copy()
         
-        df_resto['DOMINIO'], df_resto['ENERGIA'] = 'NO', 3
+        df_resto['DOMINIO'], df_resto['ENERGIA_PM'] = 'NO', "3"
         df_final = pd.concat([df_pm, df_resto], ignore_index=True)
 
-        # Groupby final para que el Excel no pese 1GB
-        agrupadores = ['PROV_FINAL', 'MUNICIPIO', 'ID_EMPRESA', 'GT', 'Linea SILAS DNGFF', 'ID_LINEA', 'RAMAL', 'DOMINIO', 'ENERGIA', 'CONTRATO', 'BE', 'TARIFA_BASE_ITG', 'DEBITADO', 'DESCUENTO_X_INTEGRACION']
+        # Agrupamos solo por las columnas necesarias (ID_LINEA es suficiente identificación)
+        agrupadores = ['PROV_FINAL', 'MUNICIPIO', 'ID_EMPRESA', 'GT', 'ID_LINEA', 'RAMAL', 'DOMINIO', 'ENERGIA_PM', 'CONTRATO', 'BE', 'TARIFA_BASE_ITG_V', 'DEBITADO', 'DESCUENTO_X_INTEGRACION']
         
         return df_final.groupby(agrupadores, as_index=False).agg({
-            'CANTIDAD_USOS': 'sum',
-            'COMP_ITG': 'sum',
-            'COMP_ATS': 'sum',
-            'COMP_ATS_s_IVA': 'sum',
-            'COMP_ITG_s_IVA': 'sum'
+            'CANTIDAD_USOS': 'sum', 'COMP_ITG': 'sum', 'COMP_ATS': 'sum', 'COMP_ATS_s_IVA': 'sum', 'COMP_ITG_s_IVA': 'sum'
         })
 
     except Exception as e:
-        st.error(f"Error en el motor: {e}")
+        st.error(f"Error técnico: {e}")
         return None
 
 # =============================================================================
-# UI (INTERFAZ) - TOTALMENTE LIMPIA DE KEYS CONFLICTIVAS
+# INTERFAZ (UI)
 # =============================================================================
 
 st.title("🏛️ Sistema de Fiscalización TTR")
 
-if 'memo_tarifas' not in st.session_state: st.session_state.memo_tarifas = None
-if 'memo_ttr' not in st.session_state: st.session_state.memo_ttr = None
+if 'tar_sync' not in st.session_state: st.session_state.tar_sync = None
+if 'ttr_sync' not in st.session_state: st.session_state.ttr_sync = None
 
-t1, t2 = st.tabs(["💰 1. TARIFAS", "⚡ 2. LIQUIDACIÓN DMK"])
+tabs = st.tabs(["💰 1. TARIFAS", "⚡ 2. PROCESAR DMK"])
 
-with t1:
-    f_base = st.file_uploader("Cuadro Noviembre", key="up_tar_nov")
-    if f_base:
+with tabs[0]:
+    f_tar = st.file_uploader("Subir Cuadro Noviembre", key="up_tar_key")
+    if f_tar:
         c = st.columns(5)
         m = {'1SCN': c[0].number_input("1SCN", 494.33), '2SCN': c[1].number_input("2SCN", 551.24), '3SCN': c[2].number_input("3SCN", 593.70), '4SCN': c[3].number_input("4SCN", 636.21), '5SCN': c[4].number_input("5SCN", 678.42)}
         if st.button("📊 Proyectar"):
-            st.session_state.memo_tarifas = motor_tarifas_proyeccion(pd.read_excel(f_base), m)
-    if st.session_state.memo_tarifas is not None: st.dataframe(st.session_state.memo_tarifas)
+            st.session_state.tar_sync = motor_tarifas_proyeccion(pd.read_excel(f_tar), m)
+    if st.session_state.tar_sync is not None: st.dataframe(st.session_state.tar_sync)
 
-with t2:
-    if st.session_state.memo_tarifas is not None:
+with tabs[1]:
+    if st.session_state.tar_sync is not None:
         ca, cb = st.columns(2)
-        fv = ca.file_uploader("Nomenclador V (Actualizado)", key="up_v_final")
-        fe = cb.file_uploader("Energías", key="up_ener_final")
-        fzip = st.file_uploader("DMK (ZIP/CSV)", key="up_dmk_zip")
-        corte = st.date_input("Fecha Corte Febrero:", datetime(2026, 2, 14), key="up_date")
+        fv = ca.file_uploader("Nomenclador V", key="up_v_key")
+        fe = cb.file_uploader("Energías", key="up_e_key")
+        fzip = st.file_uploader("DMK (ZIP/CSV)", key="up_z_key")
+        dt_corte = st.date_input("Fecha Cambio de Tarifa:", datetime(2026, 2, 14))
         
-        if fv and fe and fzip and st.button("🚀 GENERAR TTR"):
+        if fv and fe and fzip and st.button("🚀 INICIAR PROCESO TTR"):
             with st.spinner("Procesando con motor Polars (Anti-caída)..."):
-                st.session_state.memo_ttr = procesar_dmk_final_blindado(fzip, pd.read_excel(fv), st.session_state.memo_tarifas, fe, str(corte))
+                st.session_state.ttr_sync = procesar_dmk_v13_6(fzip, pd.read_excel(fv), st.session_state.tar_sync, fe, str(dt_corte))
             
-            if st.session_state.memo_ttr is not None:
-                st.success("Cálculo terminado.")
-                st.download_button("📥 DESCARGAR TTR (.xlsx)", preparar_descarga(st.session_state.memo_ttr), "TTR_Final.xlsx")
-                st.dataframe(st.session_state.memo_ttr.head(20))
+            if st.session_state.ttr_sync is not None:
+                st.success("TTR Finalizado.")
+                st.download_button("📥 DESCARGAR LIQUIDACIÓN", preparar_descarga(st.session_state.ttr_sync), "Liquidacion_TTR_Final.xlsx")
+                st.dataframe(st.session_state.ttr_sync.head(10))
     else:
-        st.warning("Primero cargá las tarifas en la pestaña anterior.")
+        st.warning("Debe configurar las tarifas primero.")
