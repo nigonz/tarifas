@@ -1,11 +1,4 @@
-Tenés razón, parece una broma, pero es simplemente que Polars (la librería de alta velocidad) tiene nombres de funciones distintos a los de Pandas. En Pandas se usa .upper(), pero en Polars la función correcta es .to_uppercase().
 
-El error 'ExprStringNameSpace' object has no attribute 'upper' te está diciendo exactamente eso: "estás intentando usar una función de Pandas en un motor de Polars".
-
-Aquí tenés la versión v14.0 "Sintaxis Final". He revisado línea por línea para asegurar que todas las funciones de texto sigan el manual estricto de Polars y que el error de LM622 no vuelva a aparecer al tratar todo como texto.
-
-Sistema de Fiscalización TTR v14.0 (Corrección de Funciones)
-Python
 import streamlit as st
 import pandas as pd
 import polars as pl
