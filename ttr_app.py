@@ -6,11 +6,18 @@ import zipfile
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Fiscalización TTR Natalia v9.7", layout="wide")
+st.set_page_config(page_title="Fiscalización TTR Natalia v9.8", layout="wide")
 
 # =============================================================================
-# BLOQUE 0: UTILIDADES
+# BLOQUE 0: UTILIDADES DE DESCARGA Y LIMPIEZA
 # =============================================================================
+
+def preparar_descarga_excel(df):
+    """Convierte un DataFrame en un objeto descargable para Streamlit."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    return output.getvalue()
 
 def blindar_nombres(df):
     if df is None: return None
@@ -20,7 +27,6 @@ def blindar_nombres(df):
 def formatear_ids(df, columnas_id):
     for col in columnas_id:
         if col in df.columns:
-            # Limpieza profunda de IDs: quita .0, espacios y pasa a mayúsculas
             df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.upper()
     return df
 
@@ -28,7 +34,7 @@ def formatear_ids(df, columnas_id):
 # BLOQUE 1: MOTOR DE TARIFAS (FIX NaN E INP)
 # =============================================================================
 
-def motor_proyeccion_tarifas_v9_7(df_nov, manuales):
+def motor_proyeccion_tarifas_v9_8(df_nov, manuales):
     df = blindar_nombres(df_nov.copy())
     col_id = [c for c in df.columns if 'ID' in c or 'GT' in c][0]
     col_p = [c for c in df.columns if 'LIMITE_INFERIOR' in c or 'TARIFA' in c or 'PRECIO' in c][0]
@@ -42,27 +48,24 @@ def motor_proyeccion_tarifas_v9_7(df_nov, manuales):
         id_t = str(row[col_id]).strip().upper()
         v_ant = pd.to_numeric(str(row[col_p]).replace(',', '.'), errors='coerce')
         
-        # Lógica de proyección
         if id_t in manuales: v_nue = manuales[id_t]
         elif 'SEN' in id_t and 'SESN' not in id_t: v_nue = manuales.get(id_t.replace('SEN', 'SCN'), manuales['1SCN']) * 1.25
         elif 'SEAN' in id_t and 'SEASN' not in id_t: v_nue = manuales.get(id_t.replace('SEAN', 'SCN'), manuales['1SCN']) * 1.75
         elif 'SCSN' in id_t: v_nue = manuales.get(id_t.replace('SCSN', 'SCN'), manuales['1SCN']) * 1.59
         elif 'SESN' in id_t: v_nue = (manuales.get(id_t.replace('SESN', 'SCN'), manuales['1SCN']) * 1.59) * 1.25
         elif 'SEASN' in id_t: v_nue = (manuales.get(id_t.replace('SEASN', 'SCN'), manuales['1SCN']) * 1.59) * 1.75
-        elif any(x in id_t for x in ['SGI', 'UPA']): v_nue = manuales['1SCN'] # Fix para grupos sin precio
+        elif any(x in id_t for x in ['SGI', 'UPA']): v_nue = manuales['1SCN']
         else: v_nue = v_ant * factor if pd.notnull(v_ant) else manuales['1SCN']
 
         res.append({'GT': id_t, 'TARIFA_NOV': round(v_ant, 2) if pd.notnull(v_ant) else 0.0, 'TARIFA_FEB': round(v_nue, 2)})
     return pd.DataFrame(res)
 
 # =============================================================================
-# BLOQUE 2: MOTOR MAESTRO (SINCRONIZACIÓN REAL V3 + TS)
+# BLOQUE 2: MOTOR MAESTRO (SINCRONIZACIÓN V3 + TS)
 # =============================================================================
 
-def motor_maestro_v9_7(df_v3_m, df_ts_m, df_elr):
-    cols_v3 = df_v3_m.columns.tolist()
-    cols_ts = df_ts_m.columns.tolist()
-    
+def motor_maestro_v9_8(df_v3_m, df_ts_m, df_elr):
+    cols_v3, cols_ts = df_v3_m.columns.tolist(), df_ts_m.columns.tolist()
     v3_i, ts_i, elr_i = blindar_nombres(df_v3_m.copy()), blindar_nombres(df_ts_m.copy()), blindar_nombres(df_elr.copy())
     
     id_l_elr = [c for c in elr_i.columns if 'ID_LINEA_BO' in c or 'ID' in c][0]
@@ -74,15 +77,13 @@ def motor_maestro_v9_7(df_v3_m, df_ts_m, df_elr):
     elr_i = formatear_ids(elr_i, [id_l_elr, id_r_elr])
     v3_i = formatear_ids(v3_i, [id_l_v3]); ts_i = formatear_ids(ts_i, [id_l_ts, id_r_ts])
 
-    # Sincronización V3 (Detectar altas)
+    # Sincronización V3 con Altas
     elr_lin = elr_i.drop_duplicates(subset=[id_l_elr])
     nuevas = elr_lin[~elr_lin[id_l_elr].isin(set(v3_i[id_l_v3]))]
     if not nuevas.empty:
         n_v3 = pd.DataFrame(columns=v3_i.columns)
-        n_v3[id_l_v3] = nuevas[id_l_elr]
-        n_v3['RAZON_SOCIAL'] = nuevas['NOMBRE_EMPRESA']
-        n_v3['GT'] = nuevas['GRUPO_TARIFARIO_LINEA_DNGFF']
-        n_v3['OBSERVACION'] = "ALTA ELR"
+        n_v3[id_l_v3] = nuevas[id_l_elr]; n_v3['RAZON_SOCIAL'] = nuevas['NOMBRE_EMPRESA']
+        n_v3['GT'] = nuevas['GRUPO_TARIFARIO_LINEA_DNGFF']; n_v3['OBSERVACION'] = "ALTA ELR"
         v3_i = pd.concat([v3_i, n_v3], ignore_index=True)
 
     v3_i = v3_i.merge(elr_lin[[id_l_elr, 'GRUPO_TARIFARIO_LINEA_DNGFF']], left_on=id_l_v3, right_on=id_l_elr, how='left')
@@ -106,27 +107,22 @@ def motor_maestro_v9_7(df_v3_m, df_ts_m, df_elr):
     return v3_f, ts_f
 
 # =============================================================================
-# BLOQUE 3: MOTOR DMK (SOLUCIÓN DEFINITIVA LM622)
+# BLOQUE 3: MOTOR DMK (SOLUCIÓN DEFINITIVA LM622 + MES PARTIDO)
 # =============================================================================
 
-def motor_dmk_v9_7(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
+def motor_dmk_v9_8(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
     try:
         data = f_dmk.getvalue() if not f_dmk.name.endswith('.zip') else zipfile.ZipFile(f_dmk).read(zipfile.ZipFile(f_dmk).namelist()[0])
         
-        # --- EL FIX MAESTRO PARA LM622 ---
-        # infer_schema_length=0 obliga a Polars a leer TODO como texto (String). 
-        # Ya no intentará convertir nada a Int64 por accidente.
+        # FIX LM622: infer_schema_length=0 fuerza a leer ID_LINEA como String desde la fila 1
         lf = pl.read_csv(io.BytesIO(data), separator=";", infer_schema_length=0, encoding='iso-8859-1').lazy()
-        
         lf = lf.rename({c: c.strip().upper().replace(" ", "_") for c in lf.collect_schema().names()})
         
-        # Ahora que todo es texto, normalizamos IDs y fechas de forma segura
         lf = lf.with_columns([
             pl.col("ID_LINEA").str.replace(r"\.0$", "").str.strip_chars().str.to_uppercase(),
             pl.col("FECHA").str.to_date("%d/%m/%Y")
         ])
         
-        # Joins y Cálculos
         v3_pl = pl.from_pandas(formatear_ids(df_v3.copy(), [df_v3.columns[0]])).lazy().rename({df_v3.columns[0]: "ID_LINEA"})
         tar_pl = pl.from_pandas(df_tarifas).lazy(); en_pl = pl.from_pandas(blindar_nombres(df_en)).lazy()
         
@@ -154,7 +150,7 @@ def motor_dmk_v9_7(f_dmk, df_v3, df_tarifas, fecha_corte, df_en):
 for k in ['v3', 'ts', 'tarifas', 'res_dmk']:
     if k not in st.session_state: st.session_state[k] = None
 
-st.title("🛡️ Fiscalización TTR Natalia v9.7")
+st.title("🛡️ Fiscalización TTR Natalia v9.8")
 tabs = st.tabs(["💰 1. TARIFAS", "📋 2. NOMENCLADORES", "📂 3. PROCESO DMK"])
 
 with tabs[0]:
@@ -163,7 +159,7 @@ with tabs[0]:
     if f_n:
         c = st.columns(6)
         m = {'1SCN': c[0].number_input("1SCN", 494.33), '2SCN': c[1].number_input("2SCN", 551.24), '3SCN': c[2].number_input("3SCN", 593.70), '4SCN': c[3].number_input("4SCN", 636.21), '5SCN': c[4].number_input("5SCN", 678.42), 'INP': c[5].number_input("INP", 200.0)}
-        if st.button("📊 Generar Tarifas"): st.session_state.tarifas = motor_proyeccion_tarifas_v9_7(pd.read_excel(f_n), m)
+        if st.button("📊 Generar Tarifas"): st.session_state.tarifas = motor_proyeccion_tarifas_v9_8(pd.read_excel(f_n), m)
     if st.session_state.tarifas is not None: st.dataframe(st.session_state.tarifas)
 
 with tabs[1]:
@@ -171,12 +167,16 @@ with tabs[1]:
     c1, c2, c3 = st.columns(3)
     fv3, fts, felr = c1.file_uploader("V3 (16 col)"), c2.file_uploader("TS (9 col)"), c3.file_uploader("ELR Nuevo")
     if fv3 and fts and felr and st.button("🔄 Sincronizar"):
-        st.session_state.v3, st.session_state.ts = motor_maestro_v9_7(pd.read_excel(fv3), pd.read_excel(fts), pd.read_excel(felr))
-        st.success("Sincronización terminada.")
+        st.session_state.v3, st.session_state.ts = motor_maestro_v9_8(pd.read_excel(fv3), pd.read_excel(fts), pd.read_excel(felr))
+        st.success("Sincronización terminada con éxito.")
+    
     if st.session_state.v3 is not None:
+        st.divider()
         col1, col2 = st.columns(2)
-        col1.download_button("📥 Bajar V3", io.BytesIO(pd.ExcelWriter(io.BytesIO(), engine='xlsxwriter').book.read()), "V3.xlsx") # Simplificado para el ejemplo
-        col2.download_button("📥 Bajar TS", io.BytesIO(pd.ExcelWriter(io.BytesIO(), engine='xlsxwriter').book.read()), "TS.xlsx")
+        # DESCARGAS CORREGIDAS
+        col1.download_button("📥 Bajar Nomenclador V3", preparar_descarga_excel(st.session_state.v3), "V3_Actualizado.xlsx")
+        col2.download_button("📥 Bajar Nomenclador TS", preparar_descarga_excel(st.session_state.ts), "TS_Actualizado.xlsx")
+        st.dataframe(st.session_state.v3.head())
 
 with tabs[2]:
     st.header("3. Liquidación DMK")
@@ -184,7 +184,7 @@ with tabs[2]:
         dt = st.date_input("Fecha cambio de tarifa:", datetime(2026, 2, 14))
         fdmk, fen = st.file_uploader("DMK"), st.file_uploader("Energías")
         if fdmk and fen and st.button("⚡ PROCESAR"):
-            st.session_state.res_dmk = motor_dmk_v9_7(fdmk, st.session_state.v3, st.session_state.tarifas, str(dt), pd.read_excel(fen))
+            st.session_state.res_dmk = motor_dmk_v9_8(fdmk, st.session_state.v3, st.session_state.tarifas, str(dt), pd.read_excel(fen))
         if st.session_state.res_dmk is not None:
-            st.download_button("📥 DESCARGAR LIQUIDACIÓN", io.BytesIO(pd.ExcelWriter(io.BytesIO(), engine='xlsxwriter').book.read()), "TTR_Final.xlsx")
+            st.download_button("📥 DESCARGAR LIQUIDACIÓN", preparar_descarga_excel(st.session_state.res_dmk), "Liquidacion_Final_TTR.xlsx")
             st.dataframe(st.session_state.res_dmk.head())
