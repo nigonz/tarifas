@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import io
 import zipfile
-from datetime import datetime
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Procesador DMK JN", layout="wide")
@@ -23,11 +22,11 @@ def motor_tarifas_original(df_nov, manuales):
         df = df_nov.copy()
         df.columns = [str(c).upper().strip() for c in df.columns]
         
-        # Buscamos columnas por palabras clave (ID y Tarifa/Limite)
+        # Localizamos columnas de ID y Precio
         c_ids = [c for c in df.columns if any(x in c for x in ['ID', 'GT'])][0]
         c_precios = [c for c in df.columns if any(x in c for x in ['LIMITE', 'TARIFA', 'PRECIO'])][0]
         
-        # Limpieza de números (comas por puntos)
+        # Limpieza de importes
         df[c_precios] = pd.to_numeric(df[c_precios].astype(str).str.replace(',', '.'), errors='coerce')
         
         val_1scn = df.loc[df[c_ids].astype(str).str.contains('1SCN', na=False), c_precios].values
@@ -39,23 +38,22 @@ def motor_tarifas_original(df_nov, manuales):
             id_t = str(row[c_ids]).strip().upper()
             v_ant = row[c_precios]
             v_nue = manuales.get(id_t, v_ant * factor if pd.notnull(v_ant) else manuales['1SCN'])
-            # Lógica especial para SGI/UPA si no están en los 5 manuales
             if any(x in id_t for x in ['SGI', 'UPA']) and id_t not in manuales:
                 v_nue = manuales['1SCN']
             res.append({'GT': id_t, 'TARIFA_FEB': round(v_nue, 2)})
             
         return pd.DataFrame(res)
     except Exception as e:
-        st.error(f"Error en Tarifas: {e}")
+        st.error(f"Error en Paso 1 (Tarifas): {e}")
         return None
 
 # =============================================================================
-# BLOQUE 2: PROCESAMIENTO DMK (PASO 2 - LÓGICA PANDAS PURA)
+# BLOQUE 2: MOTOR DMK (V16.4 - ELIMINACIÓN PREVENTIVA DE COLUMNAS)
 # =============================================================================
 
-def procesar_dmk_v16_1(fz, df_v, df_tarifas, fe):
+def procesar_dmk_v16_4(fz, df_v, df_tarifas, fe):
     try:
-        # 1. CARGAR DMK (Desde ZIP o CSV)
+        # 1. CARGAR DMK (Forzamos todo a TEXTO para que LM622 no rompa nada)
         if fz.name.endswith('.zip'):
             with zipfile.ZipFile(fz) as z:
                 with z.open(z.namelist()[0]) as f:
@@ -63,118 +61,104 @@ def procesar_dmk_v16_1(fz, df_v, df_tarifas, fe):
         else:
             df = pd.read_csv(fz, sep=';', encoding='iso-8859-1', dtype=str)
 
-        # Normalizamos nombres del DMK
+        # Normalizamos nombres de columnas
         df.columns = [c.strip().upper().replace(" ", "_") for c in df.columns]
-        
-        # 2. LIMPIEZA DE NOMENCLADOR (Eliminamos las columnas conflictivas de entrada)
+
+        # --- FILTRO QUIRÚRGICO ---
+        # Solo nos quedamos con las columnas que sirven para liquidar. 
+        # CUALQUIER OTRA COLUMNA (con basura alfanumérica) SE BORRA ACÁ.
+        cols_dmk_utiles = ["ID_EMPRESA", "ID_LINEA", "DOMINIO", "DEBITADO", "CONTRATO", "DESCUENTO_X_INTEGRACION", "CANTIDAD_USOS", "TARIFA_BASE_ITG"]
+        df = df[[c for c in cols_dmk_utiles if c in df.columns]]
+
+        # 2. PREPARAR NOMENCLADOR (ID_LINEA, GT, PROVINCIA, MUNICIPIO)
         df_v.columns = [str(c).upper().strip() for c in df_v.columns]
-        # Borramos Silas/DNGFF para evitar errores alfanuméricos
-        cols_borrar = [c for c in df_v.columns if 'SILAS' in c or 'DNGFF' in c]
-        df_v = df_v.drop(columns=cols_borrar)
-        
-        # 3. NORMALIZAR IDs PARA EL CRUCE (ID_LINEA como Texto limpio)
+        df_v = df_v[["ID_LINEA", "GT", "PROVINCIA", "MUNICIPIO"]] # Ignoramos Silas/DNGFF
+
+        # 3. NORMALIZACIÓN DE IDS PARA EL CRUCE
         def clean_id(x):
-            return str(x).strip().replace('.0', '')
+            try: return str(int(float(str(x).strip())))
+            except: return str(x).strip()
 
         df['ID_LINEA'] = df['ID_LINEA'].apply(clean_id)
         df_v['ID_LINEA'] = df_v['ID_LINEA'].apply(clean_id)
 
-        # 4. CRUCE CON NOMENCLADOR (LEFT JOIN = NO SE PIERDEN FILAS)
-        df = df.merge(df_v[['ID_LINEA', 'GT', 'PROVINCIA', 'MUNICIPIO']], on='ID_LINEA', how='left')
+        # 4. CRUCES (Merge original de Pandas)
+        df = pd.merge(df, df_v, on='ID_LINEA', how='left')
+        df = pd.merge(df, df_tarifas, on='GT', how='left')
 
-        # 5. CRUCE CON TARIFAS PROYECTADAS
-        df_tarifas['GT'] = df_tarifas['GT'].astype(str).str.strip()
-        df = df.merge(df_tarifas, on='GT', how='left')
+        # 5. CONVERSIÓN NUMÉRICA (Solo para las columnas de plata y usos)
+        cols_calc = ['DEBITADO', 'DESCUENTO_X_INTEGRACION', 'CANTIDAD_USOS', 'TARIFA_FEB', 'TARIFA_BASE_ITG']
+        for c in [x for x in cols_calc if x in df.columns]:
+            df[c] = pd.to_numeric(df[c].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
-        # 6. CONVERSIÓN NUMÉRICA PARA CÁLCULOS
-        cols_n = ['DEBITADO', 'DESCUENTO_X_INTEGRACION', 'CANTIDAD_USOS', 'TARIFA_FEB', 'TARIFA_BASE_ITG']
-        for c in cols_n:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
-
-        # 7. FÓRMULAS NOTEBOOK
+        # 6. REGLAS Y FÓRMULAS
         df['BE'] = df['CONTRATO'].isin(['830', '831', '832', '833']).map({True: 'SI', False: 'NO'})
         df['PROV_FINAL'] = df.apply(lambda x: 'CABA' if x['GT'] == 'DF' else x['PROVINCIA'], axis=1)
-        
         df['COMP_ITG'] = df['DESCUENTO_X_INTEGRACION'] * df['CANTIDAD_USOS']
         
-        # Cálculo ATS (Lógica Original)
         def calc_ats(row):
             if str(row['CONTRATO']) == '621':
-                if row['GT'] == 'INP':
-                    return (row['DEBITADO'] / 0.45 * 0.55) * row['CANTIDAD_USOS']
-                else:
-                    # Usamos TARIFA_FEB si existe, sino la BASE_ITG
-                    t_ref = row['TARIFA_FEB'] if row['TARIFA_FEB'] > 0 else row['TARIFA_BASE_ITG']
-                    return (t_ref - row['DEBITADO'] - row['DESCUENTO_X_INTEGRACION']) * row['CANTIDAD_USOS']
+                if row['GT'] == 'INP': return (row['DEBITADO'] / 0.45 * 0.55) * row['CANTIDAD_USOS']
+                t_ref = row['TARIFA_FEB'] if row['TARIFA_FEB'] > 0 else row['TARIFA_BASE_ITG']
+                return (t_ref - row['DEBITADO'] - row['DESCUENTO_X_INTEGRACION']) * row['CANTIDAD_USOS']
             return 0.0
 
         df['COMP_ATS'] = df.apply(calc_ats, axis=1)
 
-        # 8. ENERGÍAS
+        # 7. ENERGÍAS
         df_e = pd.read_excel(fe)
         df_e.columns = [str(c).upper().strip() for c in df_e.columns]
         df_e['DOMINIO'] = df_e['DOMINIO'].astype(str).str.strip().str.upper()
-        
-        df = df.merge(df_e[['DOMINIO', 'ENERGIA']].drop_duplicates(), on='DOMINIO', how='left')
+        df = pd.merge(df, df_e[['DOMINIO', 'ENERGIA']].drop_duplicates(), on='DOMINIO', how='left')
         df['ENERGIA'] = df['ENERGIA'].fillna(3)
-        df['DOMINIO_REAL'] = df.apply(lambda x: x['DOMINIO'] if pd.notnull(x['ENERGIA']) and x['DOMINIO'] != 'nan' else 'NO', axis=1)
+        df['DOMINIO_REAL'] = df.apply(lambda x: x['DOMINIO'] if pd.notnull(x['ENERGIA']) else 'NO', axis=1)
 
-        # 9. NETOS Y AGRUPACIÓN
+        # 8. AGRUPACIÓN FINAL
         df['COMP. ATS s/IVA'] = df['COMP_ATS'] / 1.105
         df['COMP. ITG s/IVA'] = df['COMP_ITG'] / 1.105
 
         agrupadores = ['PROV_FINAL', 'MUNICIPIO', 'ID_EMPRESA', 'GT', 'ID_LINEA', 'DOMINIO_REAL', 'ENERGIA', 'CONTRATO', 'BE', 'TARIFA_FEB', 'DEBITADO', 'DESCUENTO_X_INTEGRACION']
         
-        res_final = df.groupby(agrupadores, as_index=False).agg({
+        return df.groupby(agrupadores, as_index=False).agg({
             'CANTIDAD_USOS': 'sum', 'COMP_ITG': 'sum', 'COMP_ATS': 'sum', 'COMP. ATS s/IVA': 'sum', 'COMP. ITG s/IVA': 'sum'
         })
-        
-        return res_final
 
     except Exception as e:
-        st.error(f"Error en Procesamiento DMK: {e}")
+        st.error(f"Error en Paso 2: {e}")
         return None
 
 # =============================================================================
-# INTERFAZ STREAMLIT
+# INTERFAZ (UI)
 # =============================================================================
 
-st.title("📂 Procesador DMK - Lógica Original")
+st.title("📂 Procesador DMK v16.4")
 
-if 'memo_tar' not in st.session_state: st.session_state.memo_tar = None
+if 'm_tar' not in st.session_state: st.session_state.m_tar = None
 
 tabs = st.tabs(["💰 1. TARIFAS", "🚀 2. PROCESAR DMK"])
 
 with tabs[0]:
-    f_tar = st.file_uploader("Subir Cuadro Noviembre", key="f_t")
+    f_tar = st.file_uploader("Cuadro Noviembre", key="up_t")
     if f_tar:
         c = st.columns(5)
-        m = {
-            '1SCN': c[0].number_input("1SCN", 494.33),
-            '2SCN': c[1].number_input("2SCN", 551.24),
-            '3SCN': c[2].number_input("3SCN", 593.70),
-            '4SCN': c[3].number_input("4SCN", 636.21),
-            '5SCN': c[4].number_input("5SCN", 678.42)
-        }
-        if st.button("📊 Calcular Proyección"):
-            st.session_state.memo_tar = motor_tarifas_original(pd.read_excel(f_tar), m)
-    if st.session_state.memo_tar is not None:
-        st.dataframe(st.session_state.memo_tar)
+        m = {'1SCN': c[0].number_input("1SCN", 494.33), '2SCN': c[1].number_input("2SCN", 551.24), '3SCN': c[2].number_input("3SCN", 593.70), '4SCN': c[3].number_input("4SCN", 636.21), '5SCN': c[4].number_input("5SCN", 678.42)}
+        if st.button("📊 Proyectar"):
+            st.session_state.m_tar = motor_tarifas_original(pd.read_excel(f_tar), m)
+    if st.session_state.m_tar is not None: st.dataframe(st.session_state.m_tar)
 
 with tabs[1]:
-    if st.session_state.memo_tar is not None:
-        c1, c2 = st.columns(2)
-        fv = c1.file_uploader("Nomenclador V", key="f_v")
-        fe = c2.file_uploader("Parque Móvil (Energías)", key="f_e")
-        fz = st.file_uploader("Archivo DMK (CSV/ZIP)", key="f_z")
+    if st.session_state.m_tar is not None:
+        ca, cb = st.columns(2)
+        fv = ca.file_uploader("Nomenclador V", key="up_v")
+        fe = cb.file_uploader("Energías", key="up_e")
+        fz = st.file_uploader("Archivo DMK", key="up_z")
         
-        if fv and fe and fz and st.button("🚀 GENERAR ARCHIVO DMK"):
-            with st.spinner("Procesando..."):
-                resultado = procesar_dmk_v16_1(fz, pd.read_excel(fv), st.session_state.memo_tar, fe)
-                if resultado is not None:
-                    st.success("Proceso completado.")
-                    st.download_button("📥 DESCARGAR EXCEL", preparar_descarga(resultado), "DMK_Procesado.xlsx")
-                    st.dataframe(resultado.head(15))
+        if fv and fe and fz and st.button("🚀 INICIAR PROCESO"):
+            with st.spinner("Liquidando DMK..."):
+                res = procesar_dmk_v16_4(fz, pd.read_excel(fv), st.session_state.m_tar, fe)
+                if res is not None:
+                    st.success(f"¡Listo! Se procesaron {len(res)} registros.")
+                    st.download_button("📥 DESCARGAR EXCEL", preparar_descarga(res), "DMK_Liquidacion.xlsx")
+                    st.dataframe(res.head(15))
     else:
-        st.warning("Primero configurá las tarifas en la pestaña 1.")
+        st.warning("Configurá las tarifas primero.")
