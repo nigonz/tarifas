@@ -14,32 +14,46 @@ def preparar_descarga(df):
     return output.getvalue()
 
 # =============================================================================
-# BLOQUE 1: PROYECCIÓN DE TARIFAS (PASO 1)
+# BLOQUE 1: PROYECCIÓN DE TARIFAS (PASO 1) - MOTOR MIXTO (ESTRUCTURAL + INDEXADO)
 # =============================================================================
 
-def motor_tarifas_original(df_nov, manuales):
+def motor_tarifas_definitivo(df_nov, df_multiplicadores, manuales, coef_oficial=None):
     try:
+        # 1. Preparar tabla histórica (El Excel viejo)
         df = df_nov.copy()
-        # Normalizamos nombres de columnas (mayúsculas y sin espacios residuales)
         df.columns = [str(c).upper().strip() for c in df.columns]
         
-        # Localizamos la columna de IDs (que en tu Excel se llama 'ID')
+        # Localizar columnas clave
         c_ids = [c for c in df.columns if any(x in c for x in ['ID', 'GT'])][0]
-        
-        # Localizamos Específicamente el LIMITE SUPERIOR para hacer el cálculo económico
         c_precios = [c for c in df.columns if 'LIMITE SUPERIOR' in c or 'TARIFA' in c or 'PRECIO' in c][0]
         
-        # Limpieza de importes: el Excel tiene comas ('494,33'), Python necesita puntos ('494.33')
+        # Limpieza de importes (comas a puntos) para que la matemática funcione
         df[c_precios] = pd.to_numeric(df[c_precios].astype(str).str.replace(',', '.'), errors='coerce')
         
-        # --- ANCLA DE INFLACIÓN ---
-        # Buscamos cuánto valía la 1SCN en noviembre usando nuestro c_precios
+        # 2. El Porcentaje / Coeficiente de Actualización
         val_1scn = df.loc[df[c_ids].astype(str).str.contains('1SCN', na=False), c_precios].values
-        v1_ant = val_1scn[0] if len(val_1scn) > 0 else 270.0
+        v1_ant = val_1scn[0] if len(val_1scn) > 0 else 494.33
         
-        # Factor de actualización (Tarifa Nueva UI / Tarifa Vieja Excel)
-        factor = manuales['1SCN'] / v1_ant if v1_ant > 0 else 1.0
-        
+        # Si no le pasamos el porcentaje exacto en la UI, lo calcula automáticamente
+        if coef_oficial is None or coef_oficial == 0.0:
+            coeficiente = manuales['1SCN'] / v1_ant if v1_ant > 0 else 1.0
+        else:
+            coeficiente = coef_oficial
+            
+        # 3. Diccionario de Multiplicadores (Para las tarifas de la "Familia A")
+        dict_mult = {}
+        if df_multiplicadores is not None:
+            df_m = df_multiplicadores.copy()
+            df_m.columns = [str(c).upper().strip() for c in df_m.columns]
+            
+            # Busca automáticamente las columnas correctas en el CSV de multiplicadores
+            c_ids_m = [c for c in df_m.columns if any(x in c for x in ['ID', 'GT'])][0]
+            c_val_m = [c for c in df_m.columns if any(x in c for x in ['MULT', 'COEF', 'PORCENTAJE'])][0]
+            
+            df_m[c_val_m] = pd.to_numeric(df_m[c_val_m].astype(str).str.replace(',', '.'), errors='coerce')
+            dict_mult = dict(zip(df_m[c_ids_m].astype(str).str.strip().str.upper(), df_m[c_val_m]))
+
+        # 4. El Bucle de Liquidación (Fila por fila)
         res = []
         bases_manuales = ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN']
         
@@ -47,25 +61,31 @@ def motor_tarifas_original(df_nov, manuales):
             id_t = str(row[c_ids]).strip().upper()
             v_ant = row[c_precios]
             
-            # REGLA 1: Las 5 tarifas base toman el valor exacto de la UI
+            # REGLA 1: Las 5 bases intocables (Se imponen a cualquier cálculo)
             if id_t in bases_manuales and id_t in manuales:
                 v_nue = manuales[id_t]
-            
-            # REGLA 2: Excepciones históricas (SGI y UPA al valor de la 1SCN)
-            elif any(x in id_t for x in ['SGI', 'UPA']) and id_t not in manuales:
+                
+            # REGLA 2: Estructurales (Si existe en el Excel de multiplicadores)
+            elif id_t in dict_mult and pd.notnull(dict_mult[id_t]):
+                # Aplica el redondeo estricto inmediatamente
+                v_nue = round(manuales['1SCN'] * dict_mult[id_t], 2)
+                
+            # REGLA 3: Indexadas (La fórmula de Excel que me mandaste: Valor Viejo * % )
+            elif pd.notnull(v_ant):
+                # Réplica exacta de la fórmula de tu captura: ROUND(Valor * Coef, 2)
+                v_nue = round(v_ant * coeficiente, 2)
+                
+            # Fallback de seguridad por si una celda viene vacía
+            else:
                 v_nue = manuales['1SCN']
             
-            # REGLA 3: Al resto del nomenclador se le aplica el coeficiente de inflación
-            else:
-                v_nue = manuales.get(id_t, v_ant * factor if pd.notnull(v_ant) else manuales['1SCN'])
-            
-            res.append({'GT': id_t, 'TARIFA_FEB': round(v_nue, 2)})
+            res.append({'GT': id_t, 'TARIFA_FEB': v_nue})
             
         return pd.DataFrame(res)
+        
     except Exception as e:
-        st.error(f"Error en Paso 1 (Tarifas): {e}")
+        st.error(f"Error Crítico en Motor de Tarifas: {e}")
         return None
-
 # =============================================================================
 # BLOQUE 2: MOTOR DMK (V16.4 - ELIMINACIÓN PREVENTIVA DE COLUMNAS)
 # =============================================================================
