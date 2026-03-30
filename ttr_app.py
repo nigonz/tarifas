@@ -166,6 +166,59 @@ def procesar_dmk_v16_4(fz, df_v, df_tarifas, fe):
         st.error(f"Error en Paso 2: {e}")
         return None
 
+st.title("📂 Procesador DMK v16.5 - Liquidación JN")
+
+if 'm_tar' not in st.session_state: st.session_state.m_tar = None
+
+tabs = st.tabs(["💰 1. TARIFAS", "🚀 2. PROCESAR DMK"])
+
+with tabs[0]:
+    col1, col2 = st.columns(2)
+    f_tar = col1.file_uploader("Cuadro Anterior (Ej: Noviembre)", key="up_t")
+    f_mult = col2.file_uploader("CSV Multiplicadores (Opcional)", key="up_m")
+    
+    st.markdown("---")
+    
+    # Campo para inyectar la celda maestra de tu Excel
+    st.info("💡 Si el Excel tiene un porcentaje oficial en la primera fila, cargalo acá para mayor precisión.")
+    coef_input = st.number_input("Coeficiente de Actualización (Ej: 1.3149)", value=0.0000, format="%.4f")
+    
+    st.markdown("---")
+    c = st.columns(5)
+    # Valores seteados por defecto según tu última grilla de febrero
+    m = {
+        '1SCN': c[0].number_input("1SCN", 650.00), 
+        '2SCN': c[1].number_input("2SCN", 724.09), 
+        '3SCN': c[2].number_input("3SCN", 779.87), 
+        '4SCN': c[3].number_input("4SCN", 835.71), 
+        '5SCN': c[4].number_input("5SCN", 891.16)
+    }
+    
+    if f_tar and st.button("📊 Generar Cuadro Exacto"):
+        with st.spinner("Compilando matriz tarifaria..."):
+            df_nov = pd.read_excel(f_tar)
+            
+            # Carga condicional del archivo de multiplicadores si decidís usarlo
+            df_multiplicadores = None
+            if f_mult is not None:
+                try:
+                    df_multiplicadores = pd.read_csv(f_mult, sep=';', encoding='utf-8')
+                except:
+                    f_mult.seek(0)
+                    df_multiplicadores = pd.read_csv(f_mult, sep=',', encoding='utf-8')
+            
+            # Ejecutamos el motor definitivo
+            st.session_state.m_tar = motor_tarifas_definitivo(
+                df_nov=df_nov, 
+                df_multiplicadores=df_multiplicadores, 
+                manuales=m, 
+                coef_oficial=coef_input
+            )
+            
+    if st.session_state.m_tar is not None: 
+        st.success("✅ Matriz calculada con éxito.")
+        st.dataframe(st.session_state.m_tar)
+
 # =============================================================================
 # INTERFAZ (UI)
 # =============================================================================
