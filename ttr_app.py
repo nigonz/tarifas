@@ -20,26 +20,45 @@ def preparar_descarga(df):
 def motor_tarifas_original(df_nov, manuales):
     try:
         df = df_nov.copy()
+        # Normalizamos nombres de columnas (mayúsculas y sin espacios residuales)
         df.columns = [str(c).upper().strip() for c in df.columns]
         
-        # Localizamos columnas de ID y Precio
+        # Localizamos la columna de IDs (que en tu Excel se llama 'ID')
         c_ids = [c for c in df.columns if any(x in c for x in ['ID', 'GT'])][0]
-        c_precios = [c for c in df.columns if any(x in c for x in ['LIMITE', 'TARIFA', 'PRECIO'])][0]
         
-        # Limpieza de importes
+        # Localizamos Específicamente el LIMITE SUPERIOR para hacer el cálculo económico
+        c_precios = [c for c in df.columns if 'LIMITE SUPERIOR' in c or 'TARIFA' in c or 'PRECIO' in c][0]
+        
+        # Limpieza de importes: el Excel tiene comas ('494,33'), Python necesita puntos ('494.33')
         df[c_precios] = pd.to_numeric(df[c_precios].astype(str).str.replace(',', '.'), errors='coerce')
         
+        # --- ANCLA DE INFLACIÓN ---
+        # Buscamos cuánto valía la 1SCN en noviembre usando nuestro c_precios
         val_1scn = df.loc[df[c_ids].astype(str).str.contains('1SCN', na=False), c_precios].values
         v1_ant = val_1scn[0] if len(val_1scn) > 0 else 270.0
+        
+        # Factor de actualización (Tarifa Nueva UI / Tarifa Vieja Excel)
         factor = manuales['1SCN'] / v1_ant if v1_ant > 0 else 1.0
         
         res = []
+        bases_manuales = ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN']
+        
         for _, row in df.iterrows():
             id_t = str(row[c_ids]).strip().upper()
             v_ant = row[c_precios]
-            v_nue = manuales.get(id_t, v_ant * factor if pd.notnull(v_ant) else manuales['1SCN'])
-            if any(x in id_t for x in ['SGI', 'UPA']) and id_t not in manuales:
+            
+            # REGLA 1: Las 5 tarifas base toman el valor exacto de la UI
+            if id_t in bases_manuales and id_t in manuales:
+                v_nue = manuales[id_t]
+            
+            # REGLA 2: Excepciones históricas (SGI y UPA al valor de la 1SCN)
+            elif any(x in id_t for x in ['SGI', 'UPA']) and id_t not in manuales:
                 v_nue = manuales['1SCN']
+            
+            # REGLA 3: Al resto del nomenclador se le aplica el coeficiente de inflación
+            else:
+                v_nue = manuales.get(id_t, v_ant * factor if pd.notnull(v_ant) else manuales['1SCN'])
+            
             res.append({'GT': id_t, 'TARIFA_FEB': round(v_nue, 2)})
             
         return pd.DataFrame(res)
